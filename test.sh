@@ -40,7 +40,7 @@ REPO_DIR="$(pwd)"
 
 # Run rm_wrapper.sh with overridden HOME (isolates config + trash)
 _rm() {
-  HOME="$TEST_HOME" bash "$REPO_DIR/rm_wrapper.sh" "$@"
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/rm_wrapper.sh" "$@"
 }
 
 # Run ai-trash CLI with overridden HOME (isolates trash dir)
