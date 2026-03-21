@@ -1,0 +1,24 @@
+name: Test Windows PowerShell
+
+on:
+  push:
+    paths:
+      - 'windows/**'
+      - '.github/workflows/test-windows.yml'
+  pull_request:
+    paths:
+      - 'windows/**'
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Windows test suite
+        run: windows/test.ps1
