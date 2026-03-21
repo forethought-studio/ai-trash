@@ -414,7 +414,6 @@ function Remove-Item {
 
         [switch]$Recurse,
         [switch]$Force,
-        [switch]$Verbose,
 
         # Passthrough parameters forwarded to the real cmdlet when needed.
         [string]$Filter,
