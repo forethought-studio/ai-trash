@@ -226,7 +226,7 @@ _section "rm_wrapper: -i flag suppressed when no TTY"
 _set_mode always
 f_i="$WORK_DIR/interactive-test.txt"
 echo "x" > "$f_i"
-echo "" | HOME="$TEST_HOME" bash "$REPO_DIR/rm_wrapper.sh" -i "$f_i" 2>&1 || true
+echo "" | HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/rm_wrapper.sh" -i "$f_i" 2>&1 || true
 if [[ ! -f "$f_i" ]]; then
   _pass "-i suppressed (no TTY): file deleted without hanging"
 else
@@ -235,13 +235,13 @@ fi
 
 _section "rm_wrapper: missing file with -f — exits 0"
 _set_mode always
-out=$(HOME="$TEST_HOME" bash "$REPO_DIR/rm_wrapper.sh" -f "$WORK_DIR/does-not-exist.txt" 2>&1; echo "EXIT:$?")
+out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/rm_wrapper.sh" -f "$WORK_DIR/does-not-exist.txt" 2>&1; echo "EXIT:$?")
 exit_val=$(echo "$out" | grep "EXIT:" | cut -d: -f2)
 [[ "$exit_val" == "0" ]] && _pass "-f on missing file exits 0" || _fail "-f on missing file exits $exit_val"
 
 _section "rm_wrapper: missing file without -f — exits 1"
 _set_mode always
-out=$(HOME="$TEST_HOME" bash "$REPO_DIR/rm_wrapper.sh" "$WORK_DIR/does-not-exist.txt" 2>&1; echo "EXIT:$?") || true
+out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/rm_wrapper.sh" "$WORK_DIR/does-not-exist.txt" 2>&1; echo "EXIT:$?") || true
 exit_val=$(echo "$out" | grep "EXIT:" | cut -d: -f2)
 [[ "$exit_val" == "1" ]] && _pass "missing file without -f exits 1" || _fail "missing file exits $exit_val"
 
@@ -273,7 +273,7 @@ else
 fi
 
 _section "rm_wrapper: --help passes through to /bin/rm"
-out=$(HOME="$TEST_HOME" bash "$REPO_DIR/rm_wrapper.sh" --help 2>&1 || true)
+out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/rm_wrapper.sh" --help 2>&1 || true)
 if echo "$out" | grep -qiE "usage|illegal option|remove"; then
   _pass "--help passed through to /bin/rm"
 else
