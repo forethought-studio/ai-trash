@@ -22,10 +22,13 @@
 - `[BUG] Claude Code deleted the directory on which it worked.` — https://github.com/anthropics/claude-code/issues/4331
   Notes: Replying on bug reports can look self-promotional. Only do it if the issue is open and unanswered.
 
-### Reddit — to investigate directly
-Search r/ClaudeAI, r/commandline, r/macapps for posts asking about recovering files deleted by AI.
-Go to reddit.com and search: `claude deleted files recovery` or `rm -rf ai coding`
-Do NOT create standalone promo posts — only reply to people who already have the problem.
+### Reddit — findings
+Searched r/ClaudeAI. Two candidates reviewed and ruled out:
+- "Claude and me trying to recover a deleted file" (346 votes) — about using AI *for* recovery, not AI *causing* deletion. Off-topic.
+- "Claude Cowork nuked my iCloud Drive documents" — person is venting after the fact. Dropping a link feels spammy.
+
+Best Reddit opportunity: a thread where someone is asking "is there a way to prevent this?" rather than just venting.
+Watch r/ClaudeAI, r/cursor for that framing. Don't force it.
 
 ---
 
