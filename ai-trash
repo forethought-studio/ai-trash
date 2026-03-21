@@ -7,7 +7,12 @@
 #   ai-trash empty [--force]             permanently delete all items
 #   ai-trash empty --older-than <days>   permanently delete items older than N days
 
-TRASH_DIR="$HOME/.Trash/ai-trash"
+PLATFORM=$(uname -s)
+if [[ "$PLATFORM" == "Darwin" ]]; then
+  TRASH_DIR="$HOME/.Trash/ai-trash"
+else
+  TRASH_DIR="$HOME/.local/share/Trash/ai-trash"
+fi
 PROG=$(basename "$0")
 
 # ─── Helpers ───────────────────────────────────────────────────────────
@@ -17,6 +22,7 @@ _usage() {
 Usage: $PROG <command> [options]
 
 Commands:
+  status                       Show summary of AI trash contents
   list                         List all items with deletion time and original path
   restore <name>               Restore item to its original location
   empty [--force]              Permanently delete all items
@@ -34,7 +40,14 @@ _fmt_size() {
 }
 
 _xattr() {
-  xattr -p "$1" "$2" 2>/dev/null || true
+  local name="$1" file="$2"
+  if [[ "$PLATFORM" == "Darwin" ]]; then
+    xattr -p "$name" "$file" 2>/dev/null || true
+  else
+    local key="${name#com.ai-trash.}"
+    local meta="$(dirname "$file")/.$(basename "$file").ai-trash"
+    [[ -f "$meta" ]] && grep "^${key}=" "$meta" | cut -d= -f2- || true
+  fi
 }
 
 # ─── list ──────────────────────────────────────────────────────────────
@@ -183,9 +196,47 @@ cmd_empty() {
   echo "deleted $count item(s)."
 }
 
+# ─── status ────────────────────────────────────────────────────────────
+
+cmd_status() {
+  if [[ ! -d "$TRASH_DIR" ]] || [[ -z "$(ls -A "$TRASH_DIR" 2>/dev/null)" ]]; then
+    echo "AI trash is empty."
+    return 0
+  fi
+
+  local count=0 total_bytes=0
+  local oldest_time="" oldest_name="" newest_time="" newest_name=""
+
+  while IFS= read -r -d '' item; do
+    local name raw_size deleted_at
+    name=$(basename "$item")
+    raw_size=$(_xattr com.ai-trash.original-size "$item")
+    deleted_at=$(_xattr com.ai-trash.deleted-at "$item")
+
+    [[ -n "$raw_size" && "$raw_size" =~ ^[0-9]+$ ]] && total_bytes=$(( total_bytes + raw_size ))
+
+    if [[ -n "$deleted_at" ]]; then
+      if [[ -z "$oldest_time" || "$deleted_at" < "$oldest_time" ]]; then
+        oldest_time="$deleted_at"; oldest_name="$name"
+      fi
+      if [[ -z "$newest_time" || "$deleted_at" > "$newest_time" ]]; then
+        newest_time="$deleted_at"; newest_name="$name"
+      fi
+    fi
+    count=$(( count + 1 ))
+  done < <(find "$TRASH_DIR" -maxdepth 1 -mindepth 1 -print0 2>/dev/null)
+
+  printf "Items:    %s\n" "$count"
+  [[ $total_bytes -gt 0 ]] && printf "Size:     %s\n" "$(_fmt_size "$total_bytes")"
+  [[ -n "$oldest_name" ]] && printf "Oldest:   %s (%s)\n" "$oldest_name" "${oldest_time%T*}"
+  [[ -n "$newest_name" ]] && printf "Newest:   %s (%s)\n" "$newest_name" "${newest_time%T*}"
+  printf "Location: %s\n" "$TRASH_DIR"
+}
+
 # ─── dispatch ──────────────────────────────────────────────────────────
 
 case "${1:-}" in
+  status)            cmd_status ;;
   list)              cmd_list ;;
   restore)    shift; cmd_restore "$@" ;;
   empty)      shift; cmd_empty "$@" ;;

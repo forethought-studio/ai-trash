@@ -1,21 +1,43 @@
 #!/bin/bash
-# uninstall.sh — remove ai-trash from macOS
+# uninstall.sh — remove ai-trash on macOS or Linux
 set -euo pipefail
 
-BIN=/usr/local/bin
-AGENT_DIR="$HOME/Library/LaunchAgents"
-AGENT_LABEL="com.ai-trash.cleanup"
-AGENT_PLIST="$AGENT_DIR/${AGENT_LABEL}.plist"
+PLATFORM=$(uname -s)
+
+# Match the same BIN detection as install.sh
+if [[ "$PLATFORM" == "Darwin" ]]; then
+  if [[ -d /opt/homebrew/bin ]]; then
+    BIN=/opt/homebrew/bin
+  else
+    BIN=/usr/local/bin
+  fi
+else
+  BIN=/usr/local/bin
+fi
 
 echo "Uninstalling ai-trash..."
 
-# ─── Unload LaunchAgent ────────────────────────────────────────────────
+# ─── Cleanup scheduler ─────────────────────────────────────────────────
 
-if [[ -f "$AGENT_PLIST" ]]; then
-  launchctl bootout "gui/$(id -u)/$AGENT_LABEL" 2>/dev/null || \
-  launchctl unload "$AGENT_PLIST" 2>/dev/null || true
-  rm -f "$AGENT_PLIST"
-  echo "  LaunchAgent removed"
+if [[ "$PLATFORM" == "Darwin" ]]; then
+  AGENT_DIR="$HOME/Library/LaunchAgents"
+  AGENT_LABEL="com.ai-trash.cleanup"
+  AGENT_PLIST="$AGENT_DIR/${AGENT_LABEL}.plist"
+
+  if [[ -f "$AGENT_PLIST" ]]; then
+    launchctl bootout "gui/$(id -u)/$AGENT_LABEL" 2>/dev/null || \
+    launchctl unload "$AGENT_PLIST" 2>/dev/null || true
+    rm -f "$AGENT_PLIST"
+    echo "  LaunchAgent removed"
+  fi
+
+else
+  # Linux: remove the cron job
+  CRON_MARKER="# ai-trash-cleanup"
+  if crontab -l 2>/dev/null | grep -qF "$CRON_MARKER"; then
+    crontab -l 2>/dev/null | grep -vF "$CRON_MARKER" | crontab -
+    echo "  cron job removed"
+  fi
 fi
 
 # ─── Remove symlinks (only if they point to our wrapper) ───────────────
@@ -45,6 +67,12 @@ fi
 
 # ─── Done ──────────────────────────────────────────────────────────────
 
+if [[ "$PLATFORM" == "Darwin" ]]; then
+  TRASH_DIR="~/.Trash/ai-trash"
+else
+  TRASH_DIR="~/.local/share/Trash/ai-trash"
+fi
+
 echo ""
-echo "Uninstalled. Your AI trash contents are still in ~/.Trash/ai-trash/"
-echo "To remove them permanently: /bin/rm -rf ~/.Trash/ai-trash"
+echo "Uninstalled. Your AI trash contents are still in $TRASH_DIR/"
+echo "To remove them permanently: /bin/rm -rf $TRASH_DIR"
