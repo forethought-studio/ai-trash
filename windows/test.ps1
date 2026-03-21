@@ -38,13 +38,13 @@ function _Rm {
     $env:AI_TRASH_TEST_HOME = $TestHome
     # Dot-source into a child scope with overridden USERPROFILE
     $sb = {
-        param($repo, $home, $args_)
-        $env:USERPROFILE = $home
+        param($repo, $homeDir, $args_)
+        $env:USERPROFILE = $homeDir
         . "$repo\windows\rm_wrapper.ps1"
         # Force always mode for most tests — override after sourcing
         $script:_AiTrashMode = 'always'
         # Redirect trash dir to our test home
-        $script:_AiTrashDir = "$home\.Trash\ai-trash"
+        $script:_AiTrashDir = "$homeDir\.Trash\ai-trash"
         Remove-Item @args_
     }
     & $sb $RepoDir $TestHome $RmArgs
@@ -68,11 +68,11 @@ function _AiTrash {
 function _RmWithMode {
     param([string]$Mode, [string[]]$RmArgs)
     $sb = {
-        param($repo, $home, $mode, $args_)
-        $env:USERPROFILE = $home
+        param($repo, $homeDir, $mode, $args_)
+        $env:USERPROFILE = $homeDir
         . "$repo\windows\rm_wrapper.ps1"
         $script:_AiTrashMode = $mode
-        $script:_AiTrashDir  = "$home\.Trash\ai-trash"
+        $script:_AiTrashDir  = "$homeDir\.Trash\ai-trash"
         Remove-Item @args_
     }
     & $sb $RepoDir $TestHome $Mode $RmArgs
