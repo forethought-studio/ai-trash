@@ -1,0 +1,8 @@
+.DS_Store
+
+# Playwright MCP browser session artifacts (console logs, screenshots)
+.playwright-mcp/
+
+# Queue runtime state
+.queue/queue.lock
+.backlog/taskwarrior/taskchampion.sqlite3

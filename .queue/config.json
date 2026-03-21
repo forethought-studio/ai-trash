@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "project_id": "03592e03-85b2-4909-aaee-5395103d977d",
+  "queue_root": ".backlog",
+  "lock_file": ".queue/queue.lock",
+  "docs_backlog": "docs/backlog.md",
+  "docs_pending_tests": "docs/pending-tests.md",
+  "events_log": ".queue/events.log"
+}

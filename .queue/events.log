@@ -1,0 +1,8 @@
+{"task_id":"t20260321T204209Z-ol212j","stage":"current","summary":"Post Show HN once forethought-s account has enough karma (draft in marketing-research.md)","timestamp_utc":"2026-03-21T20:42:09Z","action":"add","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
+
+{"task_id":"t20260321T204209Z-sbp47i","stage":"current","summary":"Post reply to HN claude-file-recovery thread (id=47182387) once account unlocks (draft in marketing-research.md)","timestamp_utc":"2026-03-21T20:42:09Z","action":"add","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
+
+{"task_id":"t20260321T204210Z-xsf8z3","stage":"current","summary":"Post reply to DEV Community post: dev.to/yemreak/til-ai-keeps-using-rm-rf-on-important-files-changed-rm-to-trash-5hin","timestamp_utc":"2026-03-21T20:42:10Z","action":"add","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
+
+{"task_id":"t20260321T204210Z-xsf8z3","from_stage":"current","to_stage":"done","timestamp_utc":"2026-03-21T20:50:13Z","action":"move","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
+
