@@ -1,0 +1,195 @@
+#!/bin/bash
+# ai-trash — browse, restore, and empty the AI trash
+#
+# Usage:
+#   ai-trash list                        list all trashed items
+#   ai-trash restore <name>              restore item to its original location
+#   ai-trash empty [--force]             permanently delete all items
+#   ai-trash empty --older-than <days>   permanently delete items older than N days
+
+TRASH_DIR="$HOME/.Trash/ai-trash"
+PROG=$(basename "$0")
+
+# ─── Helpers ───────────────────────────────────────────────────────────
+
+_usage() {
+  cat <<EOF
+Usage: $PROG <command> [options]
+
+Commands:
+  list                         List all items with deletion time and original path
+  restore <name>               Restore item to its original location
+  empty [--force]              Permanently delete all items
+  empty --older-than <days>    Permanently delete items older than N days
+EOF
+}
+
+_fmt_size() {
+  local bytes="$1"
+  if   (( bytes >= 1073741824 )); then printf "%.1fG" "$(echo "scale=1; $bytes/1073741824" | bc)"
+  elif (( bytes >= 1048576 ));    then printf "%.1fM" "$(echo "scale=1; $bytes/1048576" | bc)"
+  elif (( bytes >= 1024 ));       then printf "%.1fK" "$(echo "scale=1; $bytes/1024" | bc)"
+  else printf "%dB" "$bytes"
+  fi
+}
+
+_xattr() {
+  xattr -p "$1" "$2" 2>/dev/null || true
+}
+
+# ─── list ──────────────────────────────────────────────────────────────
+
+cmd_list() {
+  if [[ ! -d "$TRASH_DIR" ]] || [[ -z "$(ls -A "$TRASH_DIR" 2>/dev/null)" ]]; then
+    echo "AI trash is empty."
+    return 0
+  fi
+
+  # Fixed columns take 81 chars; remainder goes to the path
+  local term_width path_width
+  term_width=$(tput cols 2>/dev/null || echo 120)
+  path_width=$(( term_width - 81 ))
+  [[ $path_width -lt 30 ]] && path_width=30
+
+  printf "%-36s  %-20s  %-5s  %-10s  %s\n" "NAME" "DELETED (UTC)" "SIZE" "BY" "ORIGINAL PATH"
+  printf "%-36s  %-20s  %-5s  %-10s  %s\n" \
+    "$(printf '%.0s-' {1..36})" "$(printf '%.0s-' {1..20})" \
+    "-----" "----------" "$(printf '%.0s-' {1..30})"
+
+  local count=0
+  while IFS= read -r -d '' item; do
+    local name orig_path deleted_at deleted_by size_str raw_size
+    name=$(basename "$item")
+    orig_path=$(_xattr com.ai-trash.original-path "$item")
+    deleted_at=$(_xattr com.ai-trash.deleted-at   "$item" | sed 's/T/ /; s/Z//')
+    deleted_by=$(_xattr com.ai-trash.deleted-by         "$item")
+    deleted_proc=$(_xattr com.ai-trash.deleted-by-process "$item")
+    raw_size=$(_xattr   com.ai-trash.original-size "$item")
+
+    if [[ -n "$raw_size" ]]; then
+      size_str=$(_fmt_size "$raw_size")
+    elif [[ -d "$item" ]]; then
+      size_str="dir"
+    else
+      size_str="-"
+    fi
+
+    [[ -z "$orig_path"   ]] && orig_path="(unknown)"
+    [[ -z "$deleted_at"  ]] && deleted_at="(unknown)"
+    [[ -z "$deleted_by"  ]] && deleted_by="-"
+    [[ -n "$deleted_proc" && "$deleted_proc" != "$deleted_by" ]] && deleted_by="$deleted_by ($deleted_proc)"
+
+    # Truncate path to fit terminal width
+    if [[ ${#orig_path} -gt $path_width ]]; then
+      orig_path="...${orig_path: -$(( path_width - 3 ))}"
+    fi
+
+    printf "%-36s  %-20s  %-5s  %-10s  %s\n" \
+      "$name" "$deleted_at" "$size_str" "$deleted_by" "$orig_path"
+    count=$((count + 1))
+  done < <(find "$TRASH_DIR" -maxdepth 1 -mindepth 1 -print0 2>/dev/null | sort -z)
+
+  echo ""
+  echo "$count item(s) in AI trash"
+}
+
+# ─── restore ───────────────────────────────────────────────────────────
+
+cmd_restore() {
+  if [[ $# -eq 0 ]]; then
+    echo "$PROG restore: item name required" >&2
+    exit 1
+  fi
+
+  local target="$1"
+  local item
+
+  if   [[ -e "$TRASH_DIR/$target" || -L "$TRASH_DIR/$target" ]]; then
+    item="$TRASH_DIR/$target"
+  elif [[ -e "$target"            || -L "$target"             ]]; then
+    item="$target"
+  else
+    echo "$PROG: '$target' not found in AI trash" >&2
+    exit 1
+  fi
+
+  local orig_path
+  orig_path=$(_xattr com.ai-trash.original-path "$item")
+  if [[ -z "$orig_path" ]]; then
+    echo "$PROG: no original path recorded for '$(basename "$item")'" >&2
+    exit 1
+  fi
+
+  if [[ -e "$orig_path" ]]; then
+    read -r -p "$PROG: '$orig_path' already exists. Overwrite? [y/N] " response
+    [[ "$response" =~ ^[Yy] ]] || { echo "aborted."; exit 0; }
+  fi
+
+  mkdir -p "$(dirname "$orig_path")"
+  if mv "$item" "$orig_path"; then
+    echo "restored → $orig_path"
+  else
+    echo "$PROG: failed to restore '$(basename "$item")'" >&2
+    exit 1
+  fi
+}
+
+# ─── empty ─────────────────────────────────────────────────────────────
+
+cmd_empty() {
+  local force=false older_than=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --force)       force=true ;;
+      --older-than)  shift; older_than="$1" ;;
+      *) echo "$PROG empty: unknown option '$1'" >&2; exit 1 ;;
+    esac
+    shift
+  done
+
+  if [[ ! -d "$TRASH_DIR" ]]; then
+    echo "AI trash is already empty."
+    return 0
+  fi
+
+  local -a items=()
+  if [[ -n "$older_than" ]]; then
+    while IFS= read -r -d '' item; do
+      items+=("$item")
+    done < <(find "$TRASH_DIR" -maxdepth 1 -mindepth 1 -mtime +"$older_than" -print0 2>/dev/null)
+  else
+    while IFS= read -r -d '' item; do
+      items+=("$item")
+    done < <(find "$TRASH_DIR" -maxdepth 1 -mindepth 1 -print0 2>/dev/null)
+  fi
+
+  local count="${#items[@]}"
+  if [[ $count -eq 0 ]]; then
+    echo "No items to delete."
+    return 0
+  fi
+
+  if [[ "$force" != true ]]; then
+    local qualifier=""
+    [[ -n "$older_than" ]] && qualifier=" older than ${older_than} days"
+    read -r -p "$PROG: permanently delete $count item(s)${qualifier}? [y/N] " response
+    [[ "$response" =~ ^[Yy] ]] || { echo "aborted."; exit 0; }
+  fi
+
+  for item in "${items[@]}"; do
+    /bin/rm -rf "$item"
+  done
+  echo "deleted $count item(s)."
+}
+
+# ─── dispatch ──────────────────────────────────────────────────────────
+
+case "${1:-}" in
+  list)              cmd_list ;;
+  restore)    shift; cmd_restore "$@" ;;
+  empty)      shift; cmd_empty "$@" ;;
+  version|--version|-V) echo "ai-trash 1.0.0" ;;
+  help|--help|-h|"") _usage ;;
+  *) echo "$PROG: unknown command '$1'" >&2; _usage >&2; exit 1 ;;
+esac
