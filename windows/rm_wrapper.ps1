@@ -419,8 +419,6 @@ function Remove-Item {
         [string]$Filter,
         [string[]]$Include,
         [string[]]$Exclude,
-        [switch]$Confirm,
-        [switch]$WhatIf,
 
         # LiteralPath alias support.
         [Parameter(ValueFromPipelineByPropertyName)]
@@ -455,13 +453,13 @@ function Remove-Item {
         # Pass unsupported scenarios straight to the real cmdlet:
         # - WhatIf / Confirm interactive flows
         # - Filter / Include / Exclude (glob filtering within directories)
-        if ($WhatIf -or $Confirm -or $Filter -or $Include -or $Exclude) {
+        if ($PSBoundParameters.ContainsKey('WhatIf') -or $PSBoundParameters.ContainsKey('Confirm') -or $Filter -or $Include -or $Exclude) {
             $params = @{ Path = $allPaths.ToArray(); Force = $Force; Recurse = $Recurse }
             if ($Filter)  { $params['Filter']  = $Filter }
             if ($Include) { $params['Include'] = $Include }
             if ($Exclude) { $params['Exclude'] = $Exclude }
-            if ($Confirm) { $params['Confirm'] = $true }
-            if ($WhatIf)  { $params['WhatIf']  = $true }
+            if ($PSBoundParameters.ContainsKey('Confirm')) { $params['Confirm'] = $true }
+            if ($PSBoundParameters.ContainsKey('WhatIf'))  { $params['WhatIf']  = $true }
             Microsoft.PowerShell.Management\Remove-Item @params
             return
         }
