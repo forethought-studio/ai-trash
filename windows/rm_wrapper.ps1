@@ -407,10 +407,14 @@ function Remove-Item {
         The original cmdlet is always available as:
             Microsoft.PowerShell.Management\Remove-Item
     #>
-    [CmdletBinding(SupportsShouldProcess, ConfirmImpact='Medium')]
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact='Medium', DefaultParameterSetName='Path')]
     param(
-        [Parameter(Mandatory, ValueFromPipeline, ValueFromPipelineByPropertyName)]
+        [Parameter(ParameterSetName='Path', Mandatory, ValueFromPipeline, ValueFromPipelineByPropertyName)]
         [string[]]$Path,
+
+        [Parameter(ParameterSetName='LiteralPath', Mandatory, ValueFromPipelineByPropertyName)]
+        [Alias('PSPath')]
+        [string[]]$LiteralPath,
 
         [switch]$Recurse,
         [switch]$Force,
@@ -418,12 +422,7 @@ function Remove-Item {
         # Passthrough parameters forwarded to the real cmdlet when needed.
         [string]$Filter,
         [string[]]$Include,
-        [string[]]$Exclude,
-
-        # LiteralPath alias support.
-        [Parameter(ValueFromPipelineByPropertyName)]
-        [Alias('PSPath')]
-        [string[]]$LiteralPath
+        [string[]]$Exclude
     )
 
     begin {
