@@ -19,13 +19,20 @@ FAILURES=0
 
 # ─── Isolated test environment ─────────────────────────────────────────
 # Work dir is under $HOME so files aren't caught by the /tmp disposable rule.
-# TEST_HOME has its own .Trash so we never touch the real macOS Trash.
+# TEST_HOME has its own Trash hierarchy so we never touch the real system Trash.
 WORK_DIR="$HOME/ai-trash-test-$$"
 TEST_HOME="$WORK_DIR/home"
-TEST_TRASH="$TEST_HOME/.Trash/ai-trash"
-TEST_SYSTEM_TRASH="$TEST_HOME/.Trash"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  TEST_TRASH="$TEST_HOME/.Trash/ai-trash"
+  TEST_SYSTEM_TRASH="$TEST_HOME/.Trash"
+  mkdir -p "$WORK_DIR" "$TEST_HOME/.Trash"
+else
+  TEST_TRASH="$TEST_HOME/.local/share/Trash/ai-trash"
+  TEST_SYSTEM_TRASH="$TEST_HOME/.local/share/Trash/files"
+  mkdir -p "$WORK_DIR" "$TEST_HOME/.local/share/Trash/files"
+fi
 TEST_CONF_DIR="$TEST_HOME/.config/ai-trash"
-mkdir -p "$WORK_DIR" "$TEST_HOME/.Trash" "$TEST_CONF_DIR"
+mkdir -p "$TEST_TRASH" "$TEST_CONF_DIR"
 
 trap 'rm -rf "$WORK_DIR"' EXIT
 
