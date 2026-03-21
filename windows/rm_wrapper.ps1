@@ -466,7 +466,7 @@ function Remove-Item {
 
         $hasForce   = $Force.IsPresent
         $hasRecurse = $Recurse.IsPresent
-        $hasVerbose = $Verbose.IsPresent
+        $hasVerbose = $PSBoundParameters.ContainsKey('Verbose')
 
         # Guard: no user profile (e.g. SYSTEM account) — pass through unchanged.
         if ([string]::IsNullOrEmpty($env:USERPROFILE)) {
