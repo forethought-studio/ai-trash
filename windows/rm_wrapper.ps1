@@ -536,4 +536,6 @@ function Remove-Item {
 }
 
 # Export the function so it is available in the session.
-Export-ModuleMember -Function Remove-Item -ErrorAction SilentlyContinue
+if ($MyInvocation.CommandOrigin -eq 'Module') {
+    Export-ModuleMember -Function Remove-Item
+}
