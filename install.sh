@@ -1,24 +1,25 @@
 #!/bin/bash
-# install.sh — install ai-trash on macOS
+# install.sh — install ai-trash on macOS or Linux
 set -euo pipefail
 
-# Detect install prefix: Apple Silicon Homebrew uses /opt/homebrew, Intel uses /usr/local
-if [[ -d /opt/homebrew/bin ]]; then
-  BIN=/opt/homebrew/bin
-else
-  BIN=/usr/local/bin
-fi
-AGENT_DIR="$HOME/Library/LaunchAgents"
-AGENT_LABEL="com.ai-trash.cleanup"
-AGENT_PLIST="$AGENT_DIR/${AGENT_LABEL}.plist"
+PLATFORM=$(uname -s)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# ─── Preflight ─────────────────────────────────────────────────────────
+# ─── Detect install prefix ─────────────────────────────────────────────
 
-if [[ "$(uname)" != "Darwin" ]]; then
-  echo "error: ai-trash requires macOS" >&2
-  exit 1
+if [[ "$PLATFORM" == "Darwin" ]]; then
+  # Apple Silicon Homebrew uses /opt/homebrew, Intel uses /usr/local
+  if [[ -d /opt/homebrew/bin ]]; then
+    BIN=/opt/homebrew/bin
+  else
+    BIN=/usr/local/bin
+  fi
+else
+  # Linux: prefer /usr/local/bin (no sudo needed if user owns it, else sudo)
+  BIN=/usr/local/bin
 fi
+
+# ─── Preflight ─────────────────────────────────────────────────────────
 
 # Check that $BIN comes before /bin in PATH
 if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN"; then
@@ -38,7 +39,7 @@ fi
 
 echo "Installing to $BIN (may prompt for sudo)..."
 
-# Back up existing /usr/local/bin/rm if it isn't already our wrapper
+# Back up existing rm if it isn't already our wrapper
 if [[ -f "$BIN/rm" && ! -L "$BIN/rm" ]]; then
   sudo cp "$BIN/rm" "$BIN/rm_wrapper_old.sh"
   echo "  backed up existing $BIN/rm → $BIN/rm_wrapper_old.sh"
@@ -74,28 +75,53 @@ else
   echo "  config already exists, skipping → $CONFIG_FILE"
 fi
 
-# ─── LaunchAgent ───────────────────────────────────────────────────────
+# ─── Cleanup scheduler ─────────────────────────────────────────────────
 
-mkdir -p "$AGENT_DIR"
-cp "$SCRIPT_DIR/com.ai-trash.cleanup.plist" "$AGENT_PLIST"
+if [[ "$PLATFORM" == "Darwin" ]]; then
+  AGENT_DIR="$HOME/Library/LaunchAgents"
+  AGENT_LABEL="com.ai-trash.cleanup"
+  AGENT_PLIST="$AGENT_DIR/${AGENT_LABEL}.plist"
 
-# Unload first in case of re-install
-launchctl unload "$AGENT_PLIST" 2>/dev/null || true
-launchctl bootout "gui/$(id -u)/$AGENT_LABEL" 2>/dev/null || true
+  mkdir -p "$AGENT_DIR"
+  cp "$SCRIPT_DIR/com.ai-trash.cleanup.plist" "$AGENT_PLIST"
 
-if launchctl bootstrap "gui/$(id -u)" "$AGENT_PLIST" 2>/dev/null ||
-   launchctl load "$AGENT_PLIST" 2>/dev/null; then
-  echo "  LaunchAgent loaded (runs every 6 hours, purges items >30 days old)"
+  # Unload first in case of re-install
+  launchctl unload "$AGENT_PLIST" 2>/dev/null || true
+  launchctl bootout "gui/$(id -u)/$AGENT_LABEL" 2>/dev/null || true
+
+  if launchctl bootstrap "gui/$(id -u)" "$AGENT_PLIST" 2>/dev/null ||
+     launchctl load "$AGENT_PLIST" 2>/dev/null; then
+    echo "  LaunchAgent loaded (runs every 6 hours, purges items >30 days old)"
+  else
+    echo "  LaunchAgent installed but not loaded (will activate on next login)"
+  fi
+
 else
-  echo "  LaunchAgent installed but not loaded (will activate on next login)"
+  # Linux: install a cron job for the current user (runs every 6 hours)
+  CRON_MARKER="# ai-trash-cleanup"
+  CRON_LINE="0 */6 * * * $BIN/ai-trash-cleanup $CRON_MARKER"
+
+  # Only add if not already present
+  if crontab -l 2>/dev/null | grep -qF "$CRON_MARKER"; then
+    echo "  cron job already installed (runs every 6 hours, purges items >30 days old)"
+  else
+    ( crontab -l 2>/dev/null; echo "$CRON_LINE" ) | crontab -
+    echo "  cron job installed (runs every 6 hours, purges items >30 days old)"
+  fi
 fi
 
 # ─── Done ──────────────────────────────────────────────────────────────
 
+if [[ "$PLATFORM" == "Darwin" ]]; then
+  TRASH_EXAMPLE="~/.Trash/ai-trash/"
+else
+  TRASH_EXAMPLE="~/.local/share/Trash/ai-trash/"
+fi
+
 echo ""
 echo "Done. Your rm is now protected."
 echo ""
-echo "  rm myfile.txt          → moves to ~/.Trash/ai-trash/ (recoverable)"
-echo "  ai-trash list          → show everything in AI trash"
+echo "  rm myfile.txt           → moves to $TRASH_EXAMPLE (recoverable)"
+echo "  ai-trash list           → show everything in AI trash"
 echo "  ai-trash restore <name> → restore to original location"
-echo "  ai-trash empty         → permanently delete all AI trash"
+echo "  ai-trash empty          → permanently delete all AI trash"

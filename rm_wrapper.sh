@@ -1,9 +1,17 @@
 #!/bin/bash
 # rm_wrapper.sh – transparent rm/rmdir replacement that routes files to ai-trash
 
-# Trash dir on the boot volume; other volumes use their own .Trashes/<uid>/ai-trash
-BOOT_TRASH_DIR="$HOME/.Trash/ai-trash"
+PLATFORM=$(uname -s)  # Darwin or Linux
 SCRIPT_NAME=$(basename "$0")
+
+# Trash dirs differ by platform
+if [[ "$PLATFORM" == "Darwin" ]]; then
+  BOOT_TRASH_DIR="$HOME/.Trash/ai-trash"
+  BOOT_SYSTEM_TRASH_DIR="$HOME/.Trash"
+else
+  BOOT_TRASH_DIR="$HOME/.local/share/Trash/ai-trash"
+  BOOT_SYSTEM_TRASH_DIR="$HOME/.local/share/Trash/files"
+fi
 
 # ─── Configuration ─────────────────────────────────────────────────────
 CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/ai-trash/config.sh"
@@ -146,32 +154,63 @@ _is_ai_process() {
 #   return 1
 # }
 
+# ─── Platform helpers ──────────────────────────────────────────────────
+_stat_dev()  { [[ "$PLATFORM" == "Darwin" ]] && stat -f %d "$1" 2>/dev/null || stat -c %d "$1" 2>/dev/null; }
+_stat_size() { [[ "$PLATFORM" == "Darwin" ]] && stat -f %z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null; }
+
+# Write metadata to a trashed file.
+# macOS: extended attributes. Linux: sidecar file (no xattr dependency).
+_write_meta() {
+  local file="$1" orig_path="$2" deleted_at="$3" deleted_by="$4" deleted_proc="$5" orig_size="$6"
+  if [[ "$PLATFORM" == "Darwin" ]]; then
+    xattr -w com.ai-trash.original-path     "$orig_path"   "$file" 2>/dev/null
+    xattr -w com.ai-trash.deleted-at        "$deleted_at"  "$file" 2>/dev/null
+    xattr -w com.ai-trash.deleted-by        "$deleted_by"  "$file" 2>/dev/null
+    xattr -w com.ai-trash.deleted-by-process "$deleted_proc" "$file" 2>/dev/null
+    [[ -n "$orig_size" ]] && xattr -w com.ai-trash.original-size "$orig_size" "$file" 2>/dev/null
+  else
+    printf 'original-path=%s\ndeleted-at=%s\ndeleted-by=%s\ndeleted-by-process=%s\noriginal-size=%s\n' \
+      "$orig_path" "$deleted_at" "$deleted_by" "$deleted_proc" "$orig_size" \
+      > "$(dirname "$file")/.$(basename "$file").ai-trash" 2>/dev/null || true
+  fi
+}
+
 # ─── Resolve trash directories ─────────────────────────────────────────
-# ai-trash subdir:  boot → ~/.Trash/ai-trash   other → <mp>/.Trashes/<uid>/ai-trash
-# system Trash:     boot → ~/.Trash            other → <mp>/.Trashes/<uid>
+# macOS ai-trash:  boot → ~/.Trash/ai-trash          other → <mp>/.Trashes/<uid>/ai-trash
+# Linux ai-trash:  boot → ~/.local/share/Trash/ai-trash  other → <mp>/.Trash-<uid>/ai-trash
+# macOS system:    boot → ~/.Trash                   other → <mp>/.Trashes/<uid>
+# Linux system:    boot → ~/.local/share/Trash/files  other → <mp>/.Trash-<uid>/files
 get_trash_dir() {
   local file="$1"
   local file_dev home_dev mount_point
-  file_dev=$(stat -f %d "$file" 2>/dev/null)
-  home_dev=$(stat -f %d "$HOME" 2>/dev/null)
+  file_dev=$(_stat_dev "$file")
+  home_dev=$(_stat_dev "$HOME")
   if [[ "$file_dev" == "$home_dev" ]]; then
     printf '%s' "$BOOT_TRASH_DIR"
   else
     mount_point=$(df -P -- "$file" 2>/dev/null | awk 'NR==2 {print $NF}')
-    printf '%s' "${mount_point}/.Trashes/$(id -u)/ai-trash"
+    if [[ "$PLATFORM" == "Darwin" ]]; then
+      printf '%s' "${mount_point}/.Trashes/$(id -u)/ai-trash"
+    else
+      printf '%s' "${mount_point}/.Trash-$(id -u)/ai-trash"
+    fi
   fi
 }
 
 get_system_trash_dir() {
   local file="$1"
   local file_dev home_dev mount_point
-  file_dev=$(stat -f %d "$file" 2>/dev/null)
-  home_dev=$(stat -f %d "$HOME" 2>/dev/null)
+  file_dev=$(_stat_dev "$file")
+  home_dev=$(_stat_dev "$HOME")
   if [[ "$file_dev" == "$home_dev" ]]; then
-    printf '%s' "$HOME/.Trash"
+    printf '%s' "$BOOT_SYSTEM_TRASH_DIR"
   else
     mount_point=$(df -P -- "$file" 2>/dev/null | awk 'NR==2 {print $NF}')
-    printf '%s' "${mount_point}/.Trashes/$(id -u)"
+    if [[ "$PLATFORM" == "Darwin" ]]; then
+      printf '%s' "${mount_point}/.Trashes/$(id -u)"
+    else
+      printf '%s' "${mount_point}/.Trash-$(id -u)/files"
+    fi
   fi
 }
 
@@ -262,19 +301,16 @@ move_to_ai_trash() {
 
     dest=$(get_unique_trash_path "$trash_dir" "$(basename "$f")")
 
-    # Capture size before the move (stat -f %z gives bytes; skip for dirs — too slow)
+    # Capture size before the move (skip for dirs — too slow)
     local orig_size=""
-    [[ -f "$f" || -L "$f" ]] && orig_size=$(stat -f %z "$f" 2>/dev/null || true)
+    [[ -f "$f" || -L "$f" ]] && orig_size=$(_stat_size "$f")
 
     if mv "$f" "$dest"; then
       local deleted_at
       deleted_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-      xattr -w com.ai-trash.original-path "$abs_path"    "$dest" 2>/dev/null
-      xattr -w com.ai-trash.deleted-at    "$deleted_at"  "$dest" 2>/dev/null
-      xattr -w com.ai-trash.deleted-by         "$(id -un)"           "$dest" 2>/dev/null
-      xattr -w com.ai-trash.deleted-by-process "$(ps -p $PPID -o comm= 2>/dev/null | sed 's|.*/||')" "$dest" 2>/dev/null
-      [[ -n "$orig_size" ]] && xattr -w com.ai-trash.original-size "$orig_size" "$dest" 2>/dev/null
-      touch "$dest" 2>/dev/null  # also update mtime so find -mtime +30 uses trash-time
+      _write_meta "$dest" "$abs_path" "$deleted_at" "$(id -un)" \
+        "$(ps -p $PPID -o comm= 2>/dev/null | sed 's|.*/||')" "$orig_size"
+      touch "$dest" 2>/dev/null  # update mtime so find -mtime +30 uses trash-time
     else
       echo "${REAL_CMD:-rm}: $f: could not move to trash" >&2
       result=1

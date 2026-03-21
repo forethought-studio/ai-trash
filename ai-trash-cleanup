@@ -1,7 +1,13 @@
 #!/bin/bash
 # ai-trash-cleanup – purge ai-trash entries older than 30 days
 
-AI_TRASH="$HOME/.Trash/ai-trash"
+PLATFORM=$(uname -s)
+if [[ "$PLATFORM" == "Darwin" ]]; then
+  AI_TRASH="$HOME/.Trash/ai-trash"
+else
+  AI_TRASH="$HOME/.local/share/Trash/ai-trash"
+fi
+
 [[ -d "$AI_TRASH" ]] || exit 0
 
 find "$AI_TRASH" -maxdepth 1 -mindepth 1 -mtime +30 -exec /bin/rm -rf {} \;
