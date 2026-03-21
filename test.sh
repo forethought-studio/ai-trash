@@ -44,7 +44,7 @@ _ai_trash() {
 # ─── Config helpers ────────────────────────────────────────────────────
 _set_mode() {
   cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
-  sed -i '' "s/^MODE=.*/MODE=$1/" "$TEST_CONF_DIR/config.sh"
+  sed -i.bak "s/^MODE=.*/MODE=$1/" "$TEST_CONF_DIR/config.sh" && rm -f "${TEST_CONF_DIR}/config.sh.bak"
 }
 
 # ─── Tests ─────────────────────────────────────────────────────────────
