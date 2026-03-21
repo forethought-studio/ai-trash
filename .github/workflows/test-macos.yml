@@ -1,0 +1,34 @@
+name: Test macOS / Linux
+
+on:
+  push:
+    paths:
+      - 'rm_wrapper.sh'
+      - 'ai-trash'
+      - 'ai-trash-cleanup'
+      - 'config.default.sh'
+      - 'test.sh'
+      - '.github/workflows/test-macos.yml'
+  pull_request:
+    paths:
+      - 'rm_wrapper.sh'
+      - 'ai-trash'
+      - 'ai-trash-cleanup'
+      - 'config.default.sh'
+      - 'test.sh'
+  workflow_dispatch:
+
+jobs:
+  test-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run test suite
+        run: bash test.sh
+
+  test-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run test suite
+        run: bash test.sh

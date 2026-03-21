@@ -2,7 +2,7 @@
 # test.sh — automated test suite for ai-trash
 #
 # Usage: bash test.sh
-# Requires: macOS (xattr), no sudo needed — tests against local repo scripts.
+# Requires: macOS or Linux, no sudo needed — tests against local repo scripts.
 # NOTE: test working files are created under ~/ai-trash-test-$$ (not /tmp,
 # which the wrapper treats as a disposable location and permanently deletes).
 
@@ -77,19 +77,28 @@ else
   _fail "always: file not found in ai-trash ($TEST_TRASH). Contents: $(ls $TEST_TRASH/ 2>/dev/null || echo 'empty')"
 fi
 
-_section "rm_wrapper: always mode — metadata xattrs written"
+_section "rm_wrapper: always mode — metadata written"
 item="$TEST_TRASH/always-test.txt"
+_read_meta() {
+  local file="$1" key="$2" sidecar
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    xattr -p "com.ai-trash.$key" "$file" 2>/dev/null || true
+  else
+    sidecar="$(dirname "$file")/.$(basename "$file").ai-trash"
+    [[ -f "$sidecar" ]] && grep "^${key}=" "$sidecar" | cut -d= -f2- || true
+  fi
+}
 if [[ -f "$item" ]]; then
-  orig=$(xattr -p com.ai-trash.original-path "$item" 2>/dev/null || true)
-  ts=$(xattr -p com.ai-trash.deleted-at "$item" 2>/dev/null || true)
-  by=$(xattr -p com.ai-trash.deleted-by "$item" 2>/dev/null || true)
-  sz=$(xattr -p com.ai-trash.original-size "$item" 2>/dev/null || true)
-  [[ "$orig" == "$f" ]]   && _pass "xattr: original-path" || _fail "xattr: original-path='$orig' want '$f'"
-  [[ "$ts" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] && _pass "xattr: deleted-at ($ts)" || _fail "xattr: deleted-at='$ts'"
-  [[ -n "$by" ]]           && _pass "xattr: deleted-by ($by)" || _fail "xattr: deleted-by empty"
-  [[ "$sz" =~ ^[0-9]+$ ]]  && _pass "xattr: original-size ($sz)" || _fail "xattr: original-size='$sz'"
+  orig=$(_read_meta "$item" original-path)
+  ts=$(_read_meta "$item" deleted-at)
+  by=$(_read_meta "$item" deleted-by)
+  sz=$(_read_meta "$item" original-size)
+  [[ "$orig" == "$f" ]]   && _pass "meta: original-path" || _fail "meta: original-path='$orig' want '$f'"
+  [[ "$ts" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] && _pass "meta: deleted-at ($ts)" || _fail "meta: deleted-at='$ts'"
+  [[ -n "$by" ]]           && _pass "meta: deleted-by ($by)" || _fail "meta: deleted-by empty"
+  [[ "$sz" =~ ^[0-9]+$ ]]  && _pass "meta: original-size ($sz)" || _fail "meta: original-size='$sz'"
 else
-  _fail "xattr: item not found in trash, skipping xattr tests"
+  _fail "meta: item not found in trash, skipping metadata tests"
 fi
 
 _section "ai-trash CLI: status shows item"
