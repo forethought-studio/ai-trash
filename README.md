@@ -1,6 +1,6 @@
 # ai-trash
 
-A transparent `rm` replacement for macOS that routes deleted files to a recoverable trash folder instead of destroying them permanently — designed specifically for environments where AI coding assistants (Claude Code, Codex, Cursor, Copilot, etc.) run `rm` on your behalf.
+A transparent `rm`/`Remove-Item` replacement for macOS, Linux, and Windows that routes deleted files to a recoverable trash folder instead of destroying them permanently — designed specifically for environments where AI coding assistants (Claude Code, Codex, Cursor, Copilot, etc.) delete files on your behalf.
 
 ## The problem
 
@@ -8,9 +8,10 @@ AI agents are useful but occasionally delete the wrong file. By the time you not
 
 ## How it works
 
-- `/usr/local/bin/rm` is replaced with a wrapper. Since `/usr/local/bin` precedes `/bin` in the default macOS PATH, all `rm` calls — from your shell, scripts, build tools, and AI agents — go through it automatically.
-- Files on the **boot volume** go to `~/.Trash/ai-trash/` (inside your normal macOS Trash).
-- Files on **external or removable drives** go to `<volume>/.Trashes/<uid>/ai-trash/`, following the macOS per-volume trash convention.
+- `/usr/local/bin/rm` (or `/opt/homebrew/bin/rm` on Apple Silicon) is replaced with a wrapper. Since that directory precedes `/bin` in the default PATH, all `rm` calls — from your shell, scripts, build tools, and AI agents — go through it automatically.
+- **macOS**: files on the boot volume go to `~/.Trash/ai-trash/` (inside your normal Trash); external drives use `<volume>/.Trashes/<uid>/ai-trash/`.
+- **Linux**: files go to `~/.local/share/Trash/ai-trash/`; other volumes use `<mountpoint>/.Trash-<uid>/ai-trash/`.
+- **Windows**: a PowerShell `Remove-Item` function is dot-sourced from `$PROFILE` and routes deleted files to `%USERPROFILE%\.Trash\ai-trash\`.
 - **Disposable files** (`.log`, `.tmp`, `.pyc`, `.swp`, etc.) and system temp directories (`/tmp`, `/var/folders`, caches) are permanently deleted immediately — no point accumulating junk.
 - Each trashed item keeps its original filename. Name collisions are handled Finder-style: `file (2).txt`, `file (3).txt`.
 - Metadata is stored as extended attributes on the file itself: original path, deletion time (UTC), who deleted it, and original size.
@@ -24,7 +25,7 @@ ai-trash has three modes, configured in `~/.config/ai-trash/config.sh`:
 | Mode | Your `rm` calls | AI tool `rm` calls |
 |------|----------------|-------------------|
 | `selective` *(default)* | pass through to `/bin/rm` unchanged | → ai-trash |
-| `safe` | → macOS Trash (recoverable via Finder) | → ai-trash |
+| `safe` | → system Trash (recoverable) | → ai-trash |
 | `always` | → ai-trash | → ai-trash |
 
 `selective` is the default — your own commands behave exactly as before, only AI tool deletions are intercepted. `safe` is for anyone who wants nothing to silently disappear from the terminal. `always` gives you a full audit log of every CLI deletion.
@@ -33,11 +34,22 @@ Detection works by checking environment variables first (IDE terminals like Curs
 
 ## Requirements
 
-- macOS (tested on Monterey 12+, Ventura 13+, Sonoma 14+)
+**macOS**
+- macOS Monterey 12+ (Ventura 13+, Sonoma 14+ also tested)
 - Bash 3.2+ (ships with macOS)
-- `/usr/local/bin` must precede `/bin` in your PATH (default on macOS)
+- `/usr/local/bin` (Intel) or `/opt/homebrew/bin` (Apple Silicon) must precede `/bin` in PATH
+
+**Linux**
+- Bash 4.0+
+- `/usr/local/bin` in PATH before `/bin`
+
+**Windows**
+- PowerShell 5.1+ or PowerShell 7+
+- `$PROFILE` must be loaded in your sessions (the installer handles this)
 
 ## Install
+
+**macOS / Linux**
 
 ```bash
 git clone https://github.com/forethought-studio/ai-trash.git
@@ -46,10 +58,17 @@ chmod +x install.sh
 ./install.sh
 ```
 
-The installer will:
-1. Copy `rm_wrapper.sh`, `ai-trash`, and `ai-trash-cleanup` to `/usr/local/bin/`
-2. Symlink `/usr/local/bin/rm` and `/usr/local/bin/rmdir` to the wrapper
-3. Install and load the cleanup LaunchAgent
+The installer copies `rm_wrapper.sh`, `ai-trash`, and `ai-trash-cleanup` to the bin directory, symlinks `rm` and `rmdir` to the wrapper, and sets up the cleanup scheduler (LaunchAgent on macOS, cron on Linux).
+
+**Windows (PowerShell)**
+
+```powershell
+git clone https://github.com/forethought-studio/ai-trash.git
+cd ai-trash/windows
+.\install.ps1
+```
+
+The installer copies the scripts to `$env:USERPROFILE\.ai-trash\`, dot-sources the wrapper from your `$PROFILE`, and registers a scheduled task that runs every 6 hours to purge items older than 30 days.
 
 ## Usage
 
@@ -110,11 +129,19 @@ To change which file patterns are permanently deleted rather than trashed, edit 
 
 ## Uninstall
 
+**macOS / Linux**
+
 ```bash
 ./uninstall.sh
 ```
 
-Removes all installed files and symlinks. Your `~/.Trash/ai-trash/` contents are left intact — delete them manually if you want (`/bin/rm -rf ~/.Trash/ai-trash`).
+**Windows**
+
+```powershell
+.\windows\uninstall.ps1
+```
+
+Both uninstallers remove all installed files and leave your trash contents intact. Delete them manually if you want.
 
 ## What about safe-rm?
 
