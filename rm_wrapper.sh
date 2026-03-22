@@ -58,35 +58,6 @@ AI_PROCESS_ARGS=(
 # shellcheck source=/dev/null
 [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
 
-# Define disposable patterns (expand as needed)
-DISPOSABLE_PATTERNS=(
-  "*.DS_Store"
-  "*.log"
-  "*.tmp"
-  "*.swp"
-  "*.swo"
-  "*.bak"
-  "*.orig"
-  "*.pyc"
-  "*.class"
-  "*~"
-  "#*#"
-  "*.pyenv-shim"
-  "*.pyenv-source-shim"
-  ".pyenv-shim*"
-)
-
-# Check if a file matches any disposable pattern
-is_disposable() {
-  local filename=$(basename "$1")
-  for pattern in "${DISPOSABLE_PATTERNS[@]}"; do
-    if [[ "$filename" == $pattern ]]; then
-      return 0
-    fi
-  done
-  return 1
-}
-
 # ─── Selective mode: detect AI tool in the process call chain ──────────
 _is_ai_process() {
   # Tier 1: environment variable check — instant, no process lookup needed
@@ -133,15 +104,6 @@ _is_ai_process() {
 
   return 1
 }
-
-# ─── Custom disposable rules ───────────────────────────────────────────
-# Add project-specific functions here and call them in the classify loop below.
-# Example: return 0 to permanently delete, return 1 to trash normally.
-#
-# is_my_build_output() {
-#   [[ -d "$1/out/build/generated" ]] && return 0
-#   return 1
-# }
 
 # ─── Platform helpers ──────────────────────────────────────────────────
 _stat_dev()  { [[ "$PLATFORM" == "Darwin" ]] && stat -f %d "$1" 2>/dev/null || stat -c %d "$1" 2>/dev/null; }
@@ -325,16 +287,16 @@ if [[ -z "$HOME" || "$HOME" == "/var/root" ]]; then
   exec /bin/"$REAL_CMD" "$@"
 fi
 
-# selective — non-AI calls pass straight through to /bin/rm unchanged
-# safe      — non-AI calls route to the system Trash instead of /bin/rm
+# selective (default) — non-AI calls pass straight through to /bin/rm unchanged
+# safe                — non-AI calls route to the system Trash instead of /bin/rm
 SAFE_PASSTHROUGH=false
-if [[ "$MODE" == "selective" || "$MODE" == "safe" ]]; then
+if [[ "$MODE" == "safe" ]]; then
   if ! _is_ai_process; then
-    if [[ "$MODE" == "selective" ]]; then
-      exec /bin/"$REAL_CMD" "$@"
-    else
-      SAFE_PASSTHROUGH=true
-    fi
+    SAFE_PASSTHROUGH=true
+  fi
+else
+  if ! _is_ai_process; then
+    exec /bin/"$REAL_CMD" "$@"
   fi
 fi
 
@@ -578,29 +540,11 @@ for path in "${operands[@]}"; do
   fi
 done
 
-# ─── Separate disposable vs trash ──────────────────────────────────────
-delete_now=()
-trash_files=()
-trash_dirs=()
-
-for f in "${files[@]}"; do
-  if is_disposable "$f"; then
-    delete_now+=("$f")
-  else
-    trash_files+=("$f")
-  fi
-done
-
-for d in "${empty_dirs[@]}"; do
-  if is_disposable "$d"; then
-    delete_now+=("$d")
-  else
-    trash_dirs+=("$d")
-  fi
-done
+trash_files=("${files[@]}")
+trash_dirs=("${empty_dirs[@]}")
 
 # ─── Interactive prompts (-I: prompt once if >3 items or recursive) ────
-total_count=$((${#trash_files[@]} + ${#trash_dirs[@]} + ${#delete_now[@]}))
+total_count=$((${#trash_files[@]} + ${#trash_dirs[@]}))
 
 if [[ "$has_interactive_once" == true ]]; then
   should_prompt=false
@@ -609,7 +553,7 @@ if [[ "$has_interactive_once" == true ]]; then
   fi
   # Also prompt for recursive directory deletion
   if [[ "$has_recursive" == true ]]; then
-    for f in "${trash_files[@]}" "${delete_now[@]}"; do
+    for f in "${trash_files[@]}"; do
       if [[ -d "$f" ]]; then
         should_prompt=true
         break
@@ -630,8 +574,6 @@ fi
 # Helper for interactive single-file prompts
 prompt_and_process() {
   local file="$1"
-  local is_trash="$2"  # "trash" or "delete"
-  local is_dir="$3"    # "dir" for directory trash
 
   if [[ "$has_interactive" == true ]]; then
     read -p "rm: remove '$file'? " response
@@ -640,43 +582,23 @@ prompt_and_process() {
     fi
   fi
 
-  if [[ "$is_trash" == "trash" ]]; then
-    # For trash operations, we handle verbose output ourselves
-    if [[ "$has_verbose" == true ]]; then
-      echo "$file"
-    fi
-    if [[ "$SAFE_PASSTHROUGH" == true ]]; then
-      move_to_system_trash "$file"
-    else
-      move_to_ai_trash "$file"
-    fi
+  if [[ "$has_verbose" == true ]]; then
+    echo "$file"
+  fi
+  if [[ "$SAFE_PASSTHROUGH" == true ]]; then
+    move_to_system_trash "$file"
   else
-    # For /bin/rm, use rm_flags (has -i/-I stripped since we handle prompting)
-    /bin/rm "${rm_flags[@]}" "$file"
+    move_to_ai_trash "$file"
   fi
 
   return $?
 }
 
-# Permanent deletion (disposable files)
-# Note: /bin/rm handles -v itself, so we don't print verbose output here
-if [[ ${#delete_now[@]} -gt 0 ]]; then
-  if [[ "$has_interactive" == true ]]; then
-    for f in "${delete_now[@]}"; do
-      prompt_and_process "$f" "delete" ""
-      [[ $? -ne 0 ]] && exit_code=1
-    done
-  else
-    /bin/rm "${rm_flags[@]}" "${delete_now[@]}"
-    [[ $? -ne 0 ]] && exit_code=1
-  fi
-fi
-
 # Trash files
 if [[ ${#trash_files[@]} -gt 0 ]]; then
   if [[ "$has_interactive" == true ]]; then
     for f in "${trash_files[@]}"; do
-      prompt_and_process "$f" "trash" ""
+      prompt_and_process "$f"
       [[ $? -ne 0 ]] && exit_code=1
     done
   else
@@ -696,7 +618,7 @@ fi
 if [[ ${#trash_dirs[@]} -gt 0 ]]; then
   if [[ "$has_interactive" == true ]]; then
     for d in "${trash_dirs[@]}"; do
-      prompt_and_process "$d" "trash" "dir"
+      prompt_and_process "$d"
       [[ $? -ne 0 ]] && exit_code=1
     done
   else

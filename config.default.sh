@@ -26,17 +26,8 @@
 #                          Best for: anyone who wants a complete safety net
 #                          without polluting ai-trash with their own deletions.
 #
-#   always               — every rm call goes to ai-trash, regardless of who
-#                          called it. No process detection — simple and fast.
-#                          `ai-trash list` becomes a full audit log of every
-#                          command-line deletion, AI or human.
-#                          Best for: users who want to track all CLI deletions
-#                          in one place, or who want zero reliance on process
-#                          detection (e.g. if a tool you use isn't in the list).
-#
 MODE=selective
 # MODE=safe
-# MODE=always
 
 
 # AI ENVIRONMENT VARIABLES  (selective mode only)
