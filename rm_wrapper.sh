@@ -220,52 +220,176 @@ move_to_system_trash() {
   return $result
 }
 
+# ─── Move a single file to ai-trash subdirectory via mv ────────────────
+# Fallback for when NSFileManager is unavailable or for non-boot volumes.
+# Assumes the file exists (caller's responsibility).
+_mv_file_to_ai_trash_dir() {
+  local f="$1" abs_path="$2" deleted_at="$3" deleted_by="$4" deleted_proc="$5" orig_size="$6"
+  local trash_dir dest
+  trash_dir=$(get_trash_dir "$f")
+  if ! mkdir -p "$trash_dir" 2>/dev/null; then
+    echo "${REAL_CMD:-rm}: $f: trash unavailable on this volume, deleting permanently" >&2
+    if [[ -d "$f" ]]; then /bin/rm -rf "$f"; else /bin/rm -f "$f"; fi
+    return $?
+  fi
+  dest=$(get_unique_trash_path "$trash_dir" "$(basename "$f")")
+  if mv "$f" "$dest"; then
+    _write_meta "$dest" "$abs_path" "$deleted_at" "$deleted_by" "$deleted_proc" "$orig_size"
+    touch "$dest" 2>/dev/null
+  else
+    echo "${REAL_CMD:-rm}: $f: could not move to trash" >&2
+    return 1
+  fi
+}
+
 # ─── Move files to ai-trash with metadata ──────────────────────────────
-# Files land directly in trash_dir with their original name (Finder-style).
-# Original path is stored as an xattr so no wrapper directory is needed.
-# mtime is touched to trash-time so the 30-day cleanup uses the right clock.
+# macOS boot volume: uses NSFileManager.trashItemAtURL for Finder Put Back support.
+# Files land in ~/.Trash/ with com.ai-trash.* xattrs. Falls back to mv on failure.
+# Other volumes and Linux: mv to ai-trash subdirectory (unchanged behaviour).
 move_to_ai_trash() {
   local result=0
+  local deleted_at deleted_by deleted_proc
+  deleted_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  deleted_by=$(id -un)
+  deleted_proc=$(ps -p $PPID -o comm= 2>/dev/null | sed 's|.*/||')
 
+  # ── macOS: route boot-volume files through NSFileManager for Put Back ──
+  if [[ "$PLATFORM" == "Darwin" ]]; then
+    local home_dev
+    home_dev=$(_stat_dev "$HOME")
+    local -a boot_srcs=() boot_abs=() boot_sizes=() other_files=()
+
+    for f in "$@"; do
+      if [[ ! -e "$f" && ! -L "$f" ]]; then
+        [[ "$has_force" != true ]] && { echo "${REAL_CMD:-rm}: $f: No such file or directory" >&2; result=1; }
+        continue
+      fi
+      local abs="" sz=""
+      abs=$(realpath "$f" 2>/dev/null || echo "$f")
+      if [[ "$(_stat_dev "$f")" == "$home_dev" ]]; then
+        [[ -f "$f" || -L "$f" ]] && sz=$(_stat_size "$f")
+        boot_srcs+=("$f"); boot_abs+=("$abs"); boot_sizes+=("$sz")
+      else
+        other_files+=("$f")
+      fi
+    done
+
+    # Batch-trash boot-volume files via NSFileManager
+    if [[ ${#boot_srcs[@]} -gt 0 ]]; then
+      local paths_tmp="" py_out=""
+      paths_tmp=$(mktemp 2>/dev/null) || true
+      if [[ -n "$paths_tmp" ]]; then
+        printf '%s\0' "${boot_abs[@]}" > "$paths_tmp"
+        py_out=$(python3 - "$paths_tmp" 2>/dev/null <<'PYEOF'
+import sys, os, ctypes, ctypes.util, pwd
+
+with open(sys.argv[1], 'rb') as fh:
+    paths = [p.decode() for p in fh.read().split(b'\0') if p]
+
+home = os.environ.get('HOME', '')
+# Skip NSFileManager when HOME is overridden (e.g. test environments)
+if home != pwd.getpwuid(os.getuid()).pw_dir:
+    for _ in paths:
+        print('')
+    sys.exit(0)
+
+trash_prefix = home + '/.Trash/'
+L = ctypes.cdll.LoadLibrary(ctypes.util.find_library('objc'))
+L.objc_getClass.restype = L.sel_registerName.restype = ctypes.c_void_p
+S = L.objc_msgSend
+
+def sel(n): return L.sel_registerName(n.encode())
+def cls(n): return L.objc_getClass(n.encode())
+
+def nsstr(s):
+    S.restype = ctypes.c_void_p
+    S.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p]
+    return S(cls('NSString'), sel('stringWithUTF8String:'), s.encode())
+
+def nsurl(p):
+    S.restype = ctypes.c_void_p
+    S.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    return S(cls('NSURL'), sel('fileURLWithPath:'), nsstr(p))
+
+def url_to_path(u):
+    S.restype = ctypes.c_void_p
+    S.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    ns_path = S(u, sel('path'))
+    S.restype = ctypes.c_char_p
+    return S(ns_path, sel('UTF8String')).decode()
+
+S.restype = ctypes.c_void_p
+S.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+mgr = S(cls('NSFileManager'), sel('defaultManager'))
+trash_sel = sel('trashItemAtURL:resultingItemURL:error:')
+V = ctypes.c_void_p
+P = ctypes.POINTER(V)
+
+for path in paths:
+    try:
+        url = nsurl(path)  # compute url BEFORE setting S.argtypes for trash call
+        out = V(0); err = V(0)
+        S.restype = ctypes.c_bool
+        S.argtypes = [V, V, V, P, P]
+        ok = S(mgr, trash_sel, url, ctypes.byref(out), ctypes.byref(err))
+        if ok and out.value:
+            rp = url_to_path(out)
+            print(rp if rp.startswith(trash_prefix) else '')
+        else:
+            print('')
+    except Exception:
+        print('')
+PYEOF
+        ) || py_out=""
+        rm -f "$paths_tmp"
+      fi
+
+      # Map result paths back to source files (one line per entry, empty = failure)
+      local -a result_paths=()
+      while IFS= read -r line; do
+        result_paths+=("$line")
+      done <<< "$py_out"
+
+      for i in "${!boot_srcs[@]}"; do
+        local f="${boot_srcs[$i]}" abs="${boot_abs[$i]}" sz="${boot_sizes[$i]}"
+        local rp="${result_paths[$i]:-}"
+        if [[ -n "$rp" && (-e "$rp" || -L "$rp") ]]; then
+          # NSFileManager succeeded: file is in ~/.Trash/, stamp with our xattrs
+          _write_meta "$rp" "$abs" "$deleted_at" "$deleted_by" "$deleted_proc" "$sz"
+          touch "$rp" 2>/dev/null
+        else
+          # NSFileManager failed or unavailable: fall back to mv into ai-trash subdir
+          _mv_file_to_ai_trash_dir "$f" "$abs" "$deleted_at" "$deleted_by" "$deleted_proc" "$sz" \
+            || result=1
+        fi
+      done
+    fi
+
+    # Other-volume files: mv to cross-volume ai-trash (no NSFileManager)
+    if [[ ${#other_files[@]} -gt 0 ]]; then
+      for f in "${other_files[@]}"; do
+        local abs="" sz=""
+        abs=$(realpath "$f" 2>/dev/null || echo "$f")
+        [[ -f "$f" || -L "$f" ]] && sz=$(_stat_size "$f")
+        _mv_file_to_ai_trash_dir "$f" "$abs" "$deleted_at" "$deleted_by" "$deleted_proc" "$sz" \
+          || result=1
+      done
+    fi
+
+    return $result
+  fi
+
+  # ── Linux path (unchanged): mv all files to ai-trash subdir ────────────
   for f in "$@"; do
     if [[ ! -e "$f" && ! -L "$f" ]]; then
       [[ "$has_force" != true ]] && { echo "${REAL_CMD:-rm}: $f: No such file or directory" >&2; result=1; }
       continue
     fi
-
-    local abs_path trash_dir dest
-    abs_path=$(realpath "$f" 2>/dev/null || echo "$f")
-    trash_dir=$(get_trash_dir "$f")
-
-    # If the trash directory can't be created (read-only volume, permission
-    # denied at share root, etc.) fall through to a real permanent delete.
-    if ! mkdir -p "$trash_dir" 2>/dev/null; then
-      echo "${REAL_CMD:-rm}: $f: trash unavailable on this volume, deleting permanently" >&2
-      if [[ -d "$f" ]]; then
-        /bin/rm -rf "$f"
-      else
-        /bin/rm -f "$f"
-      fi
-      [[ $? -ne 0 ]] && result=1
-      continue
-    fi
-
-    dest=$(get_unique_trash_path "$trash_dir" "$(basename "$f")")
-
-    # Capture size before the move (skip for dirs — too slow)
-    local orig_size=""
-    [[ -f "$f" || -L "$f" ]] && orig_size=$(_stat_size "$f")
-
-    if mv "$f" "$dest"; then
-      local deleted_at
-      deleted_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-      _write_meta "$dest" "$abs_path" "$deleted_at" "$(id -un)" \
-        "$(ps -p $PPID -o comm= 2>/dev/null | sed 's|.*/||')" "$orig_size"
-      touch "$dest" 2>/dev/null  # update mtime so find -mtime +30 uses trash-time
-    else
-      echo "${REAL_CMD:-rm}: $f: could not move to trash" >&2
-      result=1
-    fi
+    local abs="" sz=""
+    abs=$(realpath "$f" 2>/dev/null || echo "$f")
+    [[ -f "$f" || -L "$f" ]] && sz=$(_stat_size "$f")
+    _mv_file_to_ai_trash_dir "$f" "$abs" "$deleted_at" "$deleted_by" "$deleted_proc" "$sz" \
+      || result=1
   done
 
   return $result

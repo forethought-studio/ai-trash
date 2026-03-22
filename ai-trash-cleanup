@@ -8,6 +8,14 @@ else
   AI_TRASH="$HOME/.local/share/Trash/ai-trash"
 fi
 
-[[ -d "$AI_TRASH" ]] || exit 0
+# macOS new-style: purge xattr-tagged items in ~/.Trash/ older than 30 days
+if [[ "$PLATFORM" == "Darwin" ]]; then
+  while IFS= read -r -d '' item; do
+    xattr -p com.ai-trash.original-path "$item" >/dev/null 2>&1 && /bin/rm -rf "$item"
+  done < <(find "$HOME/.Trash" -maxdepth 1 -mindepth 1 -not -name 'ai-trash' \
+             -mtime +30 -print0 2>/dev/null)
+fi
 
+# Legacy: purge items in the ai-trash subdirectory older than 30 days
+[[ -d "$AI_TRASH" ]] || exit 0
 find "$AI_TRASH" -maxdepth 1 -mindepth 1 -mtime +30 -exec /bin/rm -rf {} \;

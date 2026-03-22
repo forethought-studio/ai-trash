@@ -50,10 +50,35 @@ _xattr() {
   fi
 }
 
+# ─── Iterator: all ai-trash items from both locations ──────────────────
+# Yields null-terminated paths. Optional arg: mtime_days (for --older-than).
+# macOS: new-style items in ~/.Trash/ (xattr-tagged) + legacy ~/.Trash/ai-trash/
+# Linux: ~/.local/share/Trash/ai-trash/ only (unchanged)
+_each_ai_trash_item() {
+  local mtime_arg="${1:-}"
+  if [[ "$PLATFORM" == "Darwin" ]]; then
+    # New-style: items directly in ~/.Trash/ that carry our xattr
+    while IFS= read -r -d '' item; do
+      xattr -p com.ai-trash.original-path "$item" >/dev/null 2>&1 \
+        && printf '%s\0' "$item"
+    done < <(find "$HOME/.Trash" -maxdepth 1 -mindepth 1 -not -name 'ai-trash' \
+               ${mtime_arg:+-mtime +"$mtime_arg"} -print0 2>/dev/null)
+    # Legacy: items in ~/.Trash/ai-trash/
+    [[ -d "$TRASH_DIR" ]] && find "$TRASH_DIR" -maxdepth 1 -mindepth 1 \
+      ${mtime_arg:+-mtime +"$mtime_arg"} -print0 2>/dev/null
+  else
+    # Linux: items in ~/.local/share/Trash/ai-trash/
+    [[ -d "$TRASH_DIR" ]] && find "$TRASH_DIR" -maxdepth 1 -mindepth 1 \
+      ${mtime_arg:+-mtime +"$mtime_arg"} -print0 2>/dev/null
+  fi
+}
+
 # ─── list ──────────────────────────────────────────────────────────────
 
 cmd_list() {
-  if [[ ! -d "$TRASH_DIR" ]] || [[ -z "$(ls -A "$TRASH_DIR" 2>/dev/null)" ]]; then
+  local _has_item=false
+  while IFS= read -r -d '' _; do _has_item=true; break; done < <(_each_ai_trash_item)
+  if [[ "$_has_item" != true ]]; then
     echo "AI trash is empty."
     return 0
   fi
@@ -100,7 +125,7 @@ cmd_list() {
     printf "%-36s  %-20s  %-5s  %-10s  %s\n" \
       "$name" "$deleted_at" "$size_str" "$deleted_by" "$orig_path"
     count=$((count + 1))
-  done < <(find "$TRASH_DIR" -maxdepth 1 -mindepth 1 -print0 2>/dev/null | sort -z)
+  done < <(_each_ai_trash_item | sort -z)
 
   echo ""
   echo "$count item(s) in AI trash"
@@ -115,15 +140,21 @@ cmd_restore() {
   fi
 
   local target="$1"
-  local item
+  local item=""
 
-  if   [[ -e "$TRASH_DIR/$target" || -L "$TRASH_DIR/$target" ]]; then
+  if [[ -e "$TRASH_DIR/$target" || -L "$TRASH_DIR/$target" ]]; then
     item="$TRASH_DIR/$target"
-  elif [[ -e "$target"            || -L "$target"             ]]; then
-    item="$target"
-  else
-    echo "$PROG: '$target' not found in AI trash" >&2
-    exit 1
+  elif [[ "$PLATFORM" == "Darwin" && (-e "$HOME/.Trash/$target" || -L "$HOME/.Trash/$target") ]]; then
+    xattr -p com.ai-trash.original-path "$HOME/.Trash/$target" >/dev/null 2>&1 \
+      && item="$HOME/.Trash/$target"
+  fi
+  if [[ -z "$item" ]]; then
+    if [[ -e "$target" || -L "$target" ]]; then
+      item="$target"
+    else
+      echo "$PROG: '$target' not found in AI trash" >&2
+      exit 1
+    fi
   fi
 
   local orig_path
@@ -161,7 +192,9 @@ cmd_empty() {
     shift
   done
 
-  if [[ ! -d "$TRASH_DIR" ]]; then
+  local _has_item=false
+  while IFS= read -r -d '' _; do _has_item=true; break; done < <(_each_ai_trash_item)
+  if [[ "$_has_item" != true ]]; then
     echo "AI trash is already empty."
     return 0
   fi
@@ -170,11 +203,11 @@ cmd_empty() {
   if [[ -n "$older_than" ]]; then
     while IFS= read -r -d '' item; do
       items+=("$item")
-    done < <(find "$TRASH_DIR" -maxdepth 1 -mindepth 1 -mtime +"$older_than" -print0 2>/dev/null)
+    done < <(_each_ai_trash_item "$older_than")
   else
     while IFS= read -r -d '' item; do
       items+=("$item")
-    done < <(find "$TRASH_DIR" -maxdepth 1 -mindepth 1 -print0 2>/dev/null)
+    done < <(_each_ai_trash_item)
   fi
 
   local count="${#items[@]}"
@@ -199,7 +232,9 @@ cmd_empty() {
 # ─── status ────────────────────────────────────────────────────────────
 
 cmd_status() {
-  if [[ ! -d "$TRASH_DIR" ]] || [[ -z "$(ls -A "$TRASH_DIR" 2>/dev/null)" ]]; then
+  local _has_item=false
+  while IFS= read -r -d '' _; do _has_item=true; break; done < <(_each_ai_trash_item)
+  if [[ "$_has_item" != true ]]; then
     echo "AI trash is empty."
     return 0
   fi
@@ -224,13 +259,17 @@ cmd_status() {
       fi
     fi
     count=$(( count + 1 ))
-  done < <(find "$TRASH_DIR" -maxdepth 1 -mindepth 1 -print0 2>/dev/null)
+  done < <(_each_ai_trash_item)
 
   printf "Items:    %s\n" "$count"
   [[ $total_bytes -gt 0 ]] && printf "Size:     %s\n" "$(_fmt_size "$total_bytes")"
   [[ -n "$oldest_name" ]] && printf "Oldest:   %s (%s)\n" "$oldest_name" "${oldest_time%T*}"
   [[ -n "$newest_name" ]] && printf "Newest:   %s (%s)\n" "$newest_name" "${newest_time%T*}"
-  printf "Location: %s\n" "$TRASH_DIR"
+  if [[ "$PLATFORM" == "Darwin" ]]; then
+    printf "Location: %s\n" "$HOME/.Trash/"
+  else
+    printf "Location: %s\n" "$TRASH_DIR"
+  fi
 }
 
 # ─── dispatch ──────────────────────────────────────────────────────────
