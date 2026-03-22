@@ -55,6 +55,7 @@ AI_ENV_VARS=(
   "TERM_PROGRAM=windsurf"     # Windsurf (formerly Codeium)
   "TERM_PROGRAM=WarpTerminal" # Warp terminal — covers the built-in Oz agent
                               #   and any CLI agent run inside Warp
+  "OPENCLAW_SHELL=exec"       # OpenClaw — set by its exec tool when running shell commands
 )
 
 
@@ -74,6 +75,12 @@ AI_PROCESSES=(
   aider       # Aider — when installed as a standalone script (pip install aider-chat)
   devin       # Devin (Cognition)
   kiro-cli    # Kiro CLI (AWS) — formerly Amazon Q Developer CLI
+  q           # Amazon Q Developer CLI — pre-Kiro rebrand (still in wide use)
+  openclaw    # OpenClaw — self-hosted AI assistant gateway
+  cline       # Cline — standalone CLI (VS Code extension covered by TERM_PROGRAM=vscode)
+  plandex     # Plandex — large-context terminal agent
+  crush       # Crush — terminal agent by Charm
+  qodo        # Qodo Command — workflow automation agent
 )
 
 
