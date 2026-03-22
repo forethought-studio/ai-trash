@@ -14,10 +14,9 @@ AI agents are useful but occasionally delete the wrong file. By the time you not
 ## How it works
 
 - `/usr/local/bin/rm` (or `/opt/homebrew/bin/rm` on Apple Silicon) is replaced with a wrapper. Since that directory precedes `/bin` in the default PATH, all `rm` calls — from your shell, scripts, build tools, and AI agents — go through it automatically.
-- **macOS**: files on the boot volume go directly to `~/.Trash/` via `NSFileManager`, so Finder's **Put Back** works out of the box. They are tagged with `com.ai-trash.*` extended attributes so `ai-trash list/restore/empty` can identify them. Files on external drives use `<volume>/.Trashes/<uid>/ai-trash/`.
+- **macOS**: files on the boot volume go directly to `~/.Trash/` via `FSMoveObjectToTrashSync` (CoreServices), so Finder's **Put Back** works out of the box. They are tagged with `com.ai-trash.*` extended attributes so `ai-trash list/restore/empty` can identify them. Files on external drives use `<volume>/.Trashes/<uid>/ai-trash/`.
 - **Linux**: files go to `~/.local/share/Trash/ai-trash/`; other volumes use `<mountpoint>/.Trash-<uid>/ai-trash/`.
 - **Windows**: a PowerShell `Remove-Item` function is dot-sourced from `$PROFILE` and routes deleted files to `%USERPROFILE%\.Trash\ai-trash\`.
-- **Disposable files** (`.log`, `.tmp`, `.pyc`, `.swp`, etc.) and system temp directories (`/tmp`, `/var/folders`, caches) are permanently deleted immediately — no point accumulating junk.
 - Each trashed item keeps its original filename. Name collisions are handled Finder-style: `file (2).txt`, `file (3).txt`.
 - Metadata is stored as extended attributes on the file itself: original path, deletion time (UTC), who deleted it, and original size.
 - A LaunchAgent runs every 6 hours and permanently purges items older than 30 days.
@@ -30,10 +29,9 @@ ai-trash has three modes, configured in `~/.config/ai-trash/config.sh`:
 | Mode | Your `rm` calls | AI tool `rm` calls |
 |------|----------------|-------------------|
 | `selective` *(default)* | pass through to `/bin/rm` unchanged | → ai-trash |
-| `safe` | → system Trash (recoverable) | → ai-trash |
-| `always` | → ai-trash | → ai-trash |
+| `safe` | → system Trash (recoverable, with Put Back) | → ai-trash |
 
-`selective` is the default — your own commands behave exactly as before, only AI tool deletions are intercepted. `safe` is for anyone who wants nothing to silently disappear from the terminal. `always` gives you a full audit log of every CLI deletion.
+`selective` is the default — your own commands behave exactly as before, only AI tool deletions are intercepted. `safe` is for anyone who wants nothing to silently disappear from the terminal.
 
 Detection works by checking environment variables first (IDE terminals like Cursor and VS Code set `TERM_PROGRAM`), then walking the full process tree up to PID 1. Covered out of the box: Claude Code, Gemini CLI, Codex, Aider, Goose, OpenCode, Devin, Kiro CLI, OpenHands, GitHub Copilot CLI, Cursor, VS Code, Windsurf, and Warp. Add your own tools in the config file.
 
@@ -42,7 +40,7 @@ Detection works by checking environment variables first (IDE terminals like Curs
 **macOS**
 - macOS Monterey 12+ (Ventura 13+, Sonoma 14+ also tested)
 - Bash 3.2+ (ships with macOS)
-- Python 3 (for NSFileManager Put Back support — falls back to legacy behaviour without it)
+- Python 3 (for Put Back support via `FSMoveObjectToTrashSync` — falls back to plain move without it)
 - `/usr/local/bin` (Intel) or `/opt/homebrew/bin` (Apple Silicon) must precede `/bin` in PATH
 
 **Linux**

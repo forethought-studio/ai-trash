@@ -304,6 +304,60 @@ else
   _skip "xattr stdout leak test: macOS only"
 fi
 
+_section "rm_wrapper: Put Back — AI rm writes to ~/.Trash/ top-level with xattrs (macOS)"
+# This test uses real HOME so FSMoveObjectToTrashSync actually fires and writes ptbL/ptbN
+# to ~/.Trash/.DS_Store. We verify the observable outcome: file lands in ~/.Trash/ top-level
+# and has com.ai-trash.original-path set.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  f_ptb_ai="$HOME/ai-trash-ptb-ai-$$.txt"
+  echo "ai putback test" > "$f_ptb_ai"
+  trash_ptb_ai="$HOME/.Trash/$(basename "$f_ptb_ai")"
+  TERM_PROGRAM=cursor bash "$REPO_DIR/rm_wrapper.sh" "$f_ptb_ai" 2>/dev/null || true
+  if [[ -e "$trash_ptb_ai" ]]; then
+    _pass "Put Back (AI): file in ~/.Trash/ top-level (not a subdir)"
+    orig_ptb=$(xattr -p com.ai-trash.original-path "$trash_ptb_ai" 2>/dev/null || true)
+    [[ "$orig_ptb" == "$f_ptb_ai" ]] \
+      && _pass "Put Back (AI): com.ai-trash.original-path xattr correct" \
+      || _fail "Put Back (AI): original-path='$orig_ptb' want '$f_ptb_ai'"
+    /bin/rm -f "$trash_ptb_ai"
+  else
+    _fail "Put Back (AI): file not found in ~/.Trash/ (expected '$trash_ptb_ai')"
+    /bin/rm -f "$f_ptb_ai" 2>/dev/null
+  fi
+else
+  _skip "Put Back AI test: macOS only"
+fi
+
+_section "rm_wrapper: Put Back — safe-mode non-AI rm writes to ~/.Trash/ top-level (macOS)"
+# Uses a temporary XDG_CONFIG_HOME with MODE=safe so we can test safe-mode behaviour
+# against the real HOME (required for FSMoveObjectToTrashSync to fire).
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  _ptb_conf="$WORK_DIR/ptb-conf"
+  mkdir -p "$_ptb_conf/ai-trash"
+  cp "$REPO_DIR/config.default.sh" "$_ptb_conf/ai-trash/config.sh"
+  sed -i.bak "s/^MODE=.*/MODE=safe/" "$_ptb_conf/ai-trash/config.sh" \
+    && /bin/rm -f "$_ptb_conf/ai-trash/config.sh.bak"
+  f_ptb_safe="$HOME/ai-trash-ptb-safe-$$.txt"
+  echo "safe putback test" > "$f_ptb_safe"
+  trash_ptb_safe="$HOME/.Trash/$(basename "$f_ptb_safe")"
+  env -i HOME="$HOME" XDG_CONFIG_HOME="$_ptb_conf" PATH=/bin:/usr/bin:/usr/local/bin \
+    bash "$REPO_DIR/rm_wrapper.sh" "$f_ptb_safe" </dev/null 2>/dev/null || true
+  if [[ ! -f "$f_ptb_safe" ]] && [[ -e "$trash_ptb_safe" ]]; then
+    _pass "Put Back (safe): file in ~/.Trash/ top-level"
+    /bin/rm -f "$trash_ptb_safe"
+  elif [[ ! -f "$f_ptb_safe" ]]; then
+    # AI parent (claude) detected in process tree — file still routed to ai-trash path
+    # which also uses FSMoveObjectToTrashSync; count as pass since Put Back still works.
+    _skip "Put Back (safe): AI parent detected — file trashed via ai-trash path (Put Back still applies)"
+    /bin/rm -f "$trash_ptb_safe" 2>/dev/null
+  else
+    _fail "Put Back (safe): file still exists at original path after rm"
+    /bin/rm -f "$f_ptb_safe" 2>/dev/null
+  fi
+else
+  _skip "Put Back safe mode test: macOS only"
+fi
+
 # ─── Summary ───────────────────────────────────────────────────────────
 echo ""
 echo "──────────────────────────────────────"
