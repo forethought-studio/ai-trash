@@ -80,24 +80,6 @@ is_disposable() {
   return 1
 }
 
-# Check if a path is inside a disposable system directory
-is_in_disposable_location() {
-  local abs_path
-  abs_path=$(realpath "$1" 2>/dev/null || echo "$1")
-
-  # Normalize $TMPDIR
-  local tmp_dir="${TMPDIR:-/tmp}"
-
-  case "$abs_path" in
-    /tmp/*|/private/tmp/*|/var/folders/*|/private/var/folders/*|"$tmp_dir"/*)
-      return 0 ;;
-    "$HOME"/Library/Caches/*)
-      return 0 ;;
-    *)
-      return 1 ;;
-  esac
-}
-
 # ─── Selective mode: detect AI tool in the process call chain ──────────
 _is_ai_process() {
   # Tier 1: environment variable check — instant, no process lookup needed
@@ -595,7 +577,7 @@ trash_files=()
 trash_dirs=()
 
 for f in "${files[@]}"; do
-  if is_disposable "$f" || is_in_disposable_location "$f"; then
+  if is_disposable "$f"; then
     delete_now+=("$f")
   else
     trash_files+=("$f")
@@ -603,7 +585,7 @@ for f in "${files[@]}"; do
 done
 
 for d in "${empty_dirs[@]}"; do
-  if is_disposable "$d" || is_in_disposable_location "$d"; then
+  if is_disposable "$d"; then
     delete_now+=("$d")
   else
     trash_dirs+=("$d")

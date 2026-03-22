@@ -5,6 +5,8 @@
 
 A transparent `rm`/`Remove-Item` replacement for macOS, Linux, and Windows that routes deleted files to a recoverable trash folder instead of destroying them permanently — designed specifically for environments where AI coding assistants (Claude Code, Codex, Cursor, Copilot, etc.) delete files on your behalf.
 
+![ai-trash demo](assets/demo.gif)
+
 ## The problem
 
 AI agents are useful but occasionally delete the wrong file. By the time you notice, it's gone. `ai-trash` intercepts every `rm` call at the system level so there's always a recovery window, without changing how you or your scripts use `rm`.

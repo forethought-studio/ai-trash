@@ -1,5 +1,10 @@
 .DS_Store
 
+# Internal / private files — not for public repo
+CLAUDE.md
+.internal/
+demo.tape
+
 # Playwright MCP browser session artifacts (console logs, screenshots)
 .playwright-mcp/
 
