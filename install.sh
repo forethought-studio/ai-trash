@@ -2,6 +2,19 @@
 # install.sh — install ai-trash on macOS or Linux
 set -euo pipefail
 
+# ─── Remote install detection ──────────────────────────────────────────
+# When run via: curl -fsSL https://raw.githubusercontent.com/.../install.sh | bash
+# $BASH_SOURCE[0] is empty or /dev/stdin — download the repo and re-exec.
+_SRC="${BASH_SOURCE[0]:-}"
+if [[ -z "$_SRC" || "$_SRC" == "/dev/stdin" ]]; then
+  echo "Downloading ai-trash..."
+  _TMP=$(mktemp -d)
+  trap 'rm -rf "$_TMP"' EXIT
+  curl -fsSL https://github.com/forethought-studio/ai-trash/archive/refs/heads/main.tar.gz \
+    | tar -xz -C "$_TMP" --strip-components=1
+  exec bash "$_TMP/install.sh"
+fi
+
 PLATFORM=$(uname -s)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

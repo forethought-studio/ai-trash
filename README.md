@@ -1,5 +1,8 @@
 # ai-trash
 
+[![Test macOS / Linux](https://github.com/forethought-studio/ai-trash/actions/workflows/test-macos.yml/badge.svg)](https://github.com/forethought-studio/ai-trash/actions/workflows/test-macos.yml)
+[![Test Windows PowerShell](https://github.com/forethought-studio/ai-trash/actions/workflows/test-windows.yml/badge.svg)](https://github.com/forethought-studio/ai-trash/actions/workflows/test-windows.yml)
+
 A transparent `rm`/`Remove-Item` replacement for macOS, Linux, and Windows that routes deleted files to a recoverable trash folder instead of destroying them permanently — designed specifically for environments where AI coding assistants (Claude Code, Codex, Cursor, Copilot, etc.) delete files on your behalf.
 
 ## The problem
@@ -52,10 +55,14 @@ Detection works by checking environment variables first (IDE terminals like Curs
 **macOS / Linux**
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/forethought-studio/ai-trash/main/install.sh | bash
+```
+
+Or if you prefer to inspect before running:
+
+```bash
 git clone https://github.com/forethought-studio/ai-trash.git
-cd ai-trash
-chmod +x install.sh
-./install.sh
+cd ai-trash && ./install.sh
 ```
 
 The installer copies `rm_wrapper.sh`, `ai-trash`, and `ai-trash-cleanup` to the bin directory, symlinks `rm` and `rmdir` to the wrapper, and sets up the cleanup scheduler (LaunchAgent on macOS, cron on Linux).
