@@ -307,9 +307,10 @@ def nsstr(s):
     return S(cls('NSString'), sel('stringWithUTF8String:'), s.encode())
 
 def nsurl(p):
+    ns_path = nsstr(p)  # compute BEFORE setting S.argtypes for fileURLWithPath: call
     S.restype = ctypes.c_void_p
     S.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
-    return S(cls('NSURL'), sel('fileURLWithPath:'), nsstr(p))
+    return S(cls('NSURL'), sel('fileURLWithPath:'), ns_path)
 
 def url_to_path(u):
     S.restype = ctypes.c_void_p

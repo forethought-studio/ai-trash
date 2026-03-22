@@ -14,7 +14,7 @@ AI agents are useful but occasionally delete the wrong file. By the time you not
 ## How it works
 
 - `/usr/local/bin/rm` (or `/opt/homebrew/bin/rm` on Apple Silicon) is replaced with a wrapper. Since that directory precedes `/bin` in the default PATH, all `rm` calls — from your shell, scripts, build tools, and AI agents — go through it automatically.
-- **macOS**: files on the boot volume go to `~/.Trash/ai-trash/` (inside your normal Trash); external drives use `<volume>/.Trashes/<uid>/ai-trash/`.
+- **macOS**: files on the boot volume go directly to `~/.Trash/` via `NSFileManager`, so Finder's **Put Back** works out of the box. They are tagged with `com.ai-trash.*` extended attributes so `ai-trash list/restore/empty` can identify them. Files on external drives use `<volume>/.Trashes/<uid>/ai-trash/`.
 - **Linux**: files go to `~/.local/share/Trash/ai-trash/`; other volumes use `<mountpoint>/.Trash-<uid>/ai-trash/`.
 - **Windows**: a PowerShell `Remove-Item` function is dot-sourced from `$PROFILE` and routes deleted files to `%USERPROFILE%\.Trash\ai-trash\`.
 - **Disposable files** (`.log`, `.tmp`, `.pyc`, `.swp`, etc.) and system temp directories (`/tmp`, `/var/folders`, caches) are permanently deleted immediately — no point accumulating junk.
@@ -42,6 +42,7 @@ Detection works by checking environment variables first (IDE terminals like Curs
 **macOS**
 - macOS Monterey 12+ (Ventura 13+, Sonoma 14+ also tested)
 - Bash 3.2+ (ships with macOS)
+- Python 3 (for NSFileManager Put Back support — falls back to legacy behaviour without it)
 - `/usr/local/bin` (Intel) or `/opt/homebrew/bin` (Apple Silicon) must precede `/bin` in PATH
 
 **Linux**
@@ -84,7 +85,7 @@ The installer copies the scripts to `$env:USERPROFILE\.ai-trash\`, dot-sources t
 `rm` works exactly as before — no change to your workflow.
 
 ```bash
-rm myfile.txt          # moves to ~/.Trash/ai-trash/ instead of deleting
+rm myfile.txt          # moves to ~/.Trash/ (macOS) or ~/.Trash/ai-trash/ (Linux) — recoverable
 rm -rf build/          # same — whole directory is recoverable
 rm *.log               # .log files are disposable → permanently deleted
 find . -name "*.bak" | xargs rm   # works correctly — files are trashed, no hanging
@@ -118,14 +119,18 @@ ai-trash empty --older-than 7      # delete only items older than 7 days
 
 ### Recovery metadata
 
-Each item in `~/.Trash/ai-trash/` carries xattrs you can inspect directly:
+Each trashed item carries `com.ai-trash.*` extended attributes you can inspect directly:
 
 ```bash
+# macOS (new-style — top-level ~/.Trash/)
+xattr -p com.ai-trash.original-path  ~/.Trash/myfile.txt
+xattr -p com.ai-trash.deleted-at     ~/.Trash/myfile.txt
+xattr -p com.ai-trash.deleted-by     ~/.Trash/myfile.txt
+xattr -p com.ai-trash.original-size  ~/.Trash/myfile.txt
+xattr -p com.ai-trash.deleted-by-process  ~/.Trash/myfile.txt
+
+# Legacy location (external drives, Linux, or pre-update items)
 xattr -p com.ai-trash.original-path  ~/.Trash/ai-trash/myfile.txt
-xattr -p com.ai-trash.deleted-at     ~/.Trash/ai-trash/myfile.txt
-xattr -p com.ai-trash.deleted-by     ~/.Trash/ai-trash/myfile.txt
-xattr -p com.ai-trash.original-size        ~/.Trash/ai-trash/myfile.txt
-xattr -p com.ai-trash.deleted-by-process   ~/.Trash/ai-trash/myfile.txt
 ```
 
 ### Customising
@@ -134,7 +139,6 @@ The config file at `~/.config/ai-trash/config.sh` (installed automatically) cont
 
 To add a tool not on the default list, find its process name with `ps aux | grep <toolname>` and add it to `AI_PROCESSES` or `AI_PROCESS_ARGS` in the config.
 
-To change which file patterns are permanently deleted rather than trashed, edit `DISPOSABLE_PATTERNS` near the top of `rm_wrapper.sh`.
 
 ## Uninstall
 
