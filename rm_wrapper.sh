@@ -243,9 +243,10 @@ _mv_file_to_ai_trash_dir() {
 }
 
 # ─── Move files to ai-trash with metadata ──────────────────────────────
-# macOS boot volume: uses Finder (via osascript) so the OS writes DS_Store Put Back
-# metadata (ptbL/ptbN). Files land in ~/.Trash/ with com.ai-trash.* xattrs.
-# Falls back to mv on failure. Other volumes and Linux: mv to ai-trash subdirectory.
+# macOS boot volume: uses FSMoveObjectToTrashSync (CoreServices) which moves the file
+# to ~/.Trash/ and writes DS_Store ptbL/ptbN Put Back metadata — no automation
+# permissions required. Falls back to mv on failure.
+# Other volumes and Linux: mv to ai-trash subdirectory (unchanged).
 move_to_ai_trash() {
   local result=0
   local deleted_at deleted_by deleted_proc
@@ -253,7 +254,7 @@ move_to_ai_trash() {
   deleted_by=$(id -un)
   deleted_proc=$(ps -p $PPID -o comm= 2>/dev/null | sed 's|.*/||')
 
-  # ── macOS: route boot-volume files through NSFileManager for Put Back ──
+  # ── macOS: route boot-volume files through FSMoveObjectToTrashSync for Put Back ──
   if [[ "$PLATFORM" == "Darwin" ]]; then
     local home_dev
     home_dev=$(_stat_dev "$HOME")
@@ -274,20 +275,20 @@ move_to_ai_trash() {
       fi
     done
 
-    # Batch-trash boot-volume files via Finder (osascript) — Finder writes Put Back metadata
+    # Batch-trash boot-volume files via FSMoveObjectToTrashSync — writes Put Back metadata
     if [[ ${#boot_srcs[@]} -gt 0 ]]; then
       local paths_tmp="" py_out=""
       paths_tmp=$(mktemp 2>/dev/null) || true
       if [[ -n "$paths_tmp" ]]; then
         printf '%s\0' "${boot_abs[@]}" > "$paths_tmp"
         py_out=$(python3 - "$paths_tmp" 2>/dev/null <<'PYEOF'
-import sys, os, subprocess, pwd
+import sys, os, ctypes, pwd
 
 with open(sys.argv[1], 'rb') as fh:
     paths = [p.decode() for p in fh.read().split(b'\0') if p]
 
 home = os.environ.get('HOME', '')
-# Skip Finder when HOME is overridden (e.g. test environments)
+# Skip when HOME is overridden (e.g. test environments)
 if home != pwd.getpwuid(os.getuid()).pw_dir:
     for _ in paths:
         print('')
@@ -295,37 +296,36 @@ if home != pwd.getpwuid(os.getuid()).pw_dir:
 
 trash_prefix = home + '/.Trash/'
 
-def escape_as(s):
-    return s.replace('\\', '\\\\').replace('"', '\\"')
+CS = ctypes.cdll.LoadLibrary(
+    '/System/Library/Frameworks/CoreServices.framework/CoreServices')
 
-items = ', '.join('POSIX file "' + escape_as(p) + '"' for p in paths)
-script = (
-    'set fileList to {' + items + '}\n'
-    'set output to ""\n'
-    'tell application "Finder"\n'
-    '  repeat with f in fileList\n'
-    '    try\n'
-    '      set t to (move f to trash)\n'
-    '      set output to output & POSIX path of (t as alias) & ASCII character 10\n'
-    '    on error\n'
-    '      set output to output & ASCII character 10\n'
-    '    end try\n'
-    '  end repeat\n'
-    'end tell\n'
-    'return output'
-)
+class FSRef(ctypes.Structure):
+    _fields_ = [('hidden', ctypes.c_uint8 * 80)]
 
-try:
-    r = subprocess.run(['osascript'], input=script, capture_output=True, text=True, timeout=30)
-    result_lines = r.stdout.split('\n')
-except Exception:
-    result_lines = []
+CS.FSPathMakeRef.restype = ctypes.c_int32
+CS.FSPathMakeRef.argtypes = [ctypes.c_char_p, ctypes.POINTER(FSRef),
+                              ctypes.POINTER(ctypes.c_bool)]
+CS.FSRefMakePath.restype = ctypes.c_int32
+CS.FSRefMakePath.argtypes = [ctypes.POINTER(FSRef), ctypes.c_char_p, ctypes.c_uint32]
+CS.FSMoveObjectToTrashSync.restype = ctypes.c_int32
+CS.FSMoveObjectToTrashSync.argtypes = [ctypes.POINTER(FSRef), ctypes.POINTER(FSRef),
+                                        ctypes.c_uint32]
 
-for i in range(len(paths)):
-    rp = result_lines[i].strip().rstrip('/') if i < len(result_lines) else ''
-    if rp and rp.startswith(trash_prefix):
-        print(rp)
-    else:
+for path in paths:
+    try:
+        ref = FSRef(); is_dir = ctypes.c_bool(False)
+        if CS.FSPathMakeRef(path.encode(), ctypes.byref(ref),
+                            ctypes.byref(is_dir)) != 0:
+            print(''); continue
+        result_ref = FSRef()
+        if CS.FSMoveObjectToTrashSync(ctypes.byref(ref),
+                                      ctypes.byref(result_ref), 0) != 0:
+            print(''); continue
+        buf = ctypes.create_string_buffer(4096)
+        CS.FSRefMakePath(ctypes.byref(result_ref), buf, 4096)
+        rp = buf.value.decode()
+        print(rp if rp.startswith(trash_prefix) else '')
+    except Exception:
         print('')
 PYEOF
         ) || py_out=""
@@ -342,11 +342,11 @@ PYEOF
         local f="${boot_srcs[$i]}" abs="${boot_abs[$i]}" sz="${boot_sizes[$i]}"
         local rp="${result_paths[$i]:-}"
         if [[ -n "$rp" && (-e "$rp" || -L "$rp") ]]; then
-          # Finder succeeded: file is in ~/.Trash/, stamp with our xattrs
+          # FSMoveObjectToTrashSync succeeded: file is in ~/.Trash/, stamp with our xattrs
           _write_meta "$rp" "$abs" "$deleted_at" "$deleted_by" "$deleted_proc" "$sz"
           touch "$rp" 2>/dev/null
         else
-          # Finder unavailable or failed: fall back to mv into ai-trash subdir
+          # FSMoveObjectToTrashSync failed: fall back to mv into ai-trash subdir
           _mv_file_to_ai_trash_dir "$f" "$abs" "$deleted_at" "$deleted_by" "$deleted_proc" "$sz" \
             || result=1
         fi
