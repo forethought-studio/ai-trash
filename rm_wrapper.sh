@@ -188,16 +188,77 @@ get_unique_trash_path() {
   printf '%s' "$candidate"
 }
 
+# ─── Move a single file via FSMoveObjectToTrashSync (macOS boot volume) ─
+# Writes ptbL/ptbN Put Back metadata to DS_Store. No ai-trash xattrs.
+# Outputs the resulting trash path on success, empty string on failure.
+_fsmove_single() {
+  local abs="$1"
+  local home_dir="$HOME"
+  python3 - "$abs" "$home_dir" 2>/dev/null <<'PYEOF'
+import sys, os, ctypes, pwd
+
+abs_path, home = sys.argv[1], sys.argv[2]
+# Skip when HOME is overridden (test environments)
+if home != pwd.getpwuid(os.getuid()).pw_dir:
+    print(''); sys.exit(0)
+
+trash_prefix = home + '/.Trash/'
+CS = ctypes.cdll.LoadLibrary(
+    '/System/Library/Frameworks/CoreServices.framework/CoreServices')
+
+class FSRef(ctypes.Structure):
+    _fields_ = [('hidden', ctypes.c_uint8 * 80)]
+
+CS.FSPathMakeRef.restype = ctypes.c_int32
+CS.FSPathMakeRef.argtypes = [ctypes.c_char_p, ctypes.POINTER(FSRef),
+                              ctypes.POINTER(ctypes.c_bool)]
+CS.FSRefMakePath.restype = ctypes.c_int32
+CS.FSRefMakePath.argtypes = [ctypes.POINTER(FSRef), ctypes.c_char_p, ctypes.c_uint32]
+CS.FSMoveObjectToTrashSync.restype = ctypes.c_int32
+CS.FSMoveObjectToTrashSync.argtypes = [ctypes.POINTER(FSRef), ctypes.POINTER(FSRef),
+                                        ctypes.c_uint32]
+try:
+    ref = FSRef(); is_dir = ctypes.c_bool(False)
+    if CS.FSPathMakeRef(abs_path.encode(), ctypes.byref(ref),
+                        ctypes.byref(is_dir)) != 0:
+        print(''); sys.exit(0)
+    result_ref = FSRef()
+    if CS.FSMoveObjectToTrashSync(ctypes.byref(ref),
+                                  ctypes.byref(result_ref), 0) != 0:
+        print(''); sys.exit(0)
+    buf = ctypes.create_string_buffer(4096)
+    CS.FSRefMakePath(ctypes.byref(result_ref), buf, 4096)
+    rp = buf.value.decode()
+    print(rp if rp.startswith(trash_prefix) else '')
+except Exception:
+    print('')
+PYEOF
+}
+
 # ─── Move files to system Trash (safe mode, non-AI calls) ──────────────
 # No xattrs — these weren't deleted by an AI tool and won't appear in
-# `ai-trash list`. Recoverable via Finder like any normal Trash item.
+# `ai-trash list`. Uses FSMoveObjectToTrashSync on macOS boot volume so
+# Finder writes ptbL/ptbN Put Back metadata automatically.
 move_to_system_trash() {
   local result=0
+  local home_dev=""
+  [[ "$PLATFORM" == "Darwin" ]] && home_dev=$(_stat_dev "$HOME")
 
   for f in "$@"; do
     if [[ ! -e "$f" && ! -L "$f" ]]; then
       [[ "$has_force" != true ]] && { echo "${REAL_CMD:-rm}: $f: No such file or directory" >&2; result=1; }
       continue
+    fi
+
+    # macOS boot-volume: use FSMoveObjectToTrashSync for Put Back support
+    if [[ "$PLATFORM" == "Darwin" && "$(_stat_dev "$f")" == "$home_dev" ]]; then
+      local abs rp
+      abs=$(realpath "$f" 2>/dev/null || echo "$f")
+      rp=$(_fsmove_single "$abs")
+      if [[ -n "$rp" ]]; then
+        continue  # success — ptbL/ptbN written by FSMoveObjectToTrashSync
+      fi
+      # fall through to mv on failure
     fi
 
     local trash_dir dest
