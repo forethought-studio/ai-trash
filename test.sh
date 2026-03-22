@@ -38,9 +38,10 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 
 REPO_DIR="$(pwd)"
 
-# Run rm_wrapper.sh with overridden HOME (isolates config + trash)
+# Run rm_wrapper.sh with overridden HOME (isolates config + trash).
+# TERM_PROGRAM=cursor simulates an AI context so files route to ai-trash.
 _rm() {
-  HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/rm_wrapper.sh" "$@"
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor bash "$REPO_DIR/rm_wrapper.sh" "$@"
 }
 
 # Run ai-trash CLI with overridden HOME (isolates trash dir)
@@ -73,7 +74,7 @@ else
 fi
 
 _section "rm_wrapper: always mode — file goes to ai-trash"
-_set_mode always
+_set_mode selective
 f="$WORK_DIR/always-test.txt"
 echo "hello" > "$f"
 _rm "$f"
@@ -147,7 +148,7 @@ else
   _fail "restore: file not found in trash to restore"
 fi
 
-_section "rm_wrapper: always mode — directory goes to ai-trash"
+_section "rm_wrapper: AI context — directory goes to ai-trash"
 d="$WORK_DIR/testdir"
 mkdir -p "$d/subdir"
 echo "x" > "$d/file.txt"
@@ -206,7 +207,7 @@ else
 fi
 
 _section "rm_wrapper: name collision — Finder-style renaming"
-_set_mode always
+_set_mode selective
 f_a="$WORK_DIR/collision.txt"
 echo "first" > "$f_a"
 _rm "$f_a"
@@ -223,10 +224,10 @@ else
 fi
 
 _section "rm_wrapper: -i flag suppressed when no TTY"
-_set_mode always
+_set_mode selective
 f_i="$WORK_DIR/interactive-test.txt"
 echo "x" > "$f_i"
-echo "" | HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/rm_wrapper.sh" -i "$f_i" 2>&1 || true
+echo "" | HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor bash "$REPO_DIR/rm_wrapper.sh" -i "$f_i" 2>&1 || true
 if [[ ! -f "$f_i" ]]; then
   _pass "-i suppressed (no TTY): file deleted without hanging"
 else
@@ -234,19 +235,19 @@ else
 fi
 
 _section "rm_wrapper: missing file with -f — exits 0"
-_set_mode always
+_set_mode selective
 out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/rm_wrapper.sh" -f "$WORK_DIR/does-not-exist.txt" 2>&1; echo "EXIT:$?")
 exit_val=$(echo "$out" | grep "EXIT:" | cut -d: -f2)
 [[ "$exit_val" == "0" ]] && _pass "-f on missing file exits 0" || _fail "-f on missing file exits $exit_val"
 
 _section "rm_wrapper: missing file without -f — exits 1"
-_set_mode always
+_set_mode selective
 out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/rm_wrapper.sh" "$WORK_DIR/does-not-exist.txt" 2>&1; echo "EXIT:$?") || true
 exit_val=$(echo "$out" | grep "EXIT:" | cut -d: -f2)
 [[ "$exit_val" == "1" ]] && _pass "missing file without -f exits 1" || _fail "missing file exits $exit_val"
 
 _section "ai-trash CLI: empty --older-than (recent items not deleted)"
-_set_mode always
+_set_mode selective
 # Items just added should not be deleted with --older-than 1
 before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
 _ai_trash empty --force --older-than 1 >/dev/null 2>&1
