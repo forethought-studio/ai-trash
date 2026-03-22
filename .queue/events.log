@@ -6,3 +6,7 @@
 
 {"task_id":"t20260321T204210Z-xsf8z3","from_stage":"current","to_stage":"done","timestamp_utc":"2026-03-21T20:50:13Z","action":"move","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
 
+{"task_id":"t20260322T213701Z-rw282t","stage":"current","summary":"Make sure you fix this issue. It looks like a permissions issue.","timestamp_utc":"2026-03-22T21:37:02Z","action":"add","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
+
+{"task_id":"t20260322T213701Z-rw282t","stage":"current","position":"1","timestamp_utc":"2026-03-22T21:37:23Z","action":"reorder","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
+

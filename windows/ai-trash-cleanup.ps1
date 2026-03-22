@@ -7,13 +7,108 @@ param(
     [int]$DaysOld = 30
 )
 
-$AI_TRASH = "$env:USERPROFILE\.Trash\ai-trash"
+$AI_TRASH      = "$env:USERPROFILE\.Trash\ai-trash"
+$MANIFEST_PATH = "$env:USERPROFILE\.config\ai-trash\manifest.json"
+$cutoff        = (Get-Date).AddDays(-$DaysOld)
+
+# ─── Helpers ───────────────────────────────────────────────────────────────────
+
+function _ReadManifest {
+    if (-not (Test-Path -LiteralPath $MANIFEST_PATH)) { return @() }
+    try {
+        $json    = Get-Content -LiteralPath $MANIFEST_PATH -Raw -Encoding UTF8 -ErrorAction Stop
+        $entries = $json | ConvertFrom-Json
+        if ($null -eq $entries) { return @() }
+        return @($entries)
+    } catch { return @() }
+}
+
+function _WriteManifest {
+    param($Entries)
+    $dir = Split-Path $MANIFEST_PATH -Parent
+    if (-not (Test-Path -LiteralPath $dir)) {
+        $null = New-Item -ItemType Directory -Path $dir -Force -ErrorAction SilentlyContinue
+    }
+    try {
+        $arr = @($Entries)
+        if ($arr.Count -eq 0) {
+            $json = '[]'
+        } elseif ($arr.Count -eq 1) {
+            $json = '[' + ($arr[0] | ConvertTo-Json -Depth 5 -Compress) + ']'
+        } else {
+            $json = $arr | ConvertTo-Json -Depth 5
+        }
+        Set-Content -LiteralPath $MANIFEST_PATH -Value $json -Encoding UTF8 -ErrorAction Stop
+    } catch { }
+}
+
+function _FindInRecycleBin {
+    param([string]$OriginalPath)
+    try {
+        $shell = New-Object -ComObject Shell.Application
+        $bin   = $shell.Namespace(10)
+        foreach ($item in $bin.Items()) {
+            $from = $item.ExtendedProperty('System.Recycle.DeletedFrom')
+            if ([string]::IsNullOrEmpty($from)) { continue }
+            $full = Join-Path $from $item.Name
+            if ($full -ieq $OriginalPath) { return $item }
+        }
+    } catch { }
+    return $null
+}
+
+function _GetIFile {
+    param([string]$RFilePath)
+    $parent = Split-Path $RFilePath -Parent
+    $leaf   = Split-Path $RFilePath -Leaf
+    $iLeaf  = '$I' + $leaf.Substring(2)
+    return Join-Path $parent $iLeaf
+}
+
+# ─── Purge old manifest (Recycle Bin) entries ──────────────────────────────────
+
+$manifest = _ReadManifest
+$toKeep   = [System.Collections.Generic.List[object]]::new()
+
+foreach ($entry in $manifest) {
+    $old = $false
+    try {
+        $dt  = [DateTime]::Parse($entry.'deleted-at')
+        $old = ($dt -lt $cutoff)
+    } catch { }
+
+    if ($old) {
+        $binItem = _FindInRecycleBin -OriginalPath $entry.'original-path'
+        if ($null -ne $binItem) {
+            try {
+                $rFile = $binItem.Path
+                $iFile = _GetIFile -RFilePath $rFile
+                Microsoft.PowerShell.Management\Remove-Item -LiteralPath $rFile -Recurse -Force -ErrorAction Stop
+                if (Test-Path -LiteralPath $iFile) {
+                    Microsoft.PowerShell.Management\Remove-Item -LiteralPath $iFile -Force -ErrorAction SilentlyContinue
+                }
+            } catch {
+                try {
+                    Write-EventLog -LogName Application -Source 'ai-trash-cleanup' `
+                        -EventId 1 -EntryType Warning `
+                        -Message "ai-trash-cleanup: failed to delete Recycle Bin item '$($entry.'original-path')': $_" `
+                        -ErrorAction SilentlyContinue
+                } catch { }
+            }
+        }
+        # Whether or not the bin item was found, drop from manifest.
+    } else {
+        $toKeep.Add($entry)
+    }
+}
+
+_WriteManifest -Entries $toKeep
+
+# ─── Purge old legacy folder entries ──────────────────────────────────────────
 
 if (-not (Test-Path -LiteralPath $AI_TRASH)) {
     exit 0
 }
-
-$cutoff = (Get-Date).AddDays(-$DaysOld)
 
 $items = Get-ChildItem -LiteralPath $AI_TRASH -ErrorAction SilentlyContinue |
          Where-Object { $_.LastWriteTime -lt $cutoff }

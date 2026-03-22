@@ -7,6 +7,8 @@
 # When the real cmdlet is needed it is called via its fully-qualified name:
 #   Microsoft.PowerShell.Management\Remove-Item
 
+Add-Type -AssemblyName Microsoft.VisualBasic
+
 # ─── Configuration ─────────────────────────────────────────────────────────────
 
 $_AiTrashConfigPath = "$env:USERPROFILE\.config\ai-trash\config.ps1"
@@ -48,50 +50,6 @@ if (Test-Path $_AiTrashConfigPath) {
     if ($null -ne $AI_PROCESSES)    { $script:_AiTrashAiProcesses     = $AI_PROCESSES }
     if ($null -ne $AI_PROCESS_ARGS) { $script:_AiTrashAiProcessArgs   = $AI_PROCESS_ARGS }
     if ($null -ne $AI_ENV_VARS)     { $script:_AiTrashAiEnvVars       = $AI_ENV_VARS }
-}
-
-# ─── Disposable patterns ───────────────────────────────────────────────────────
-
-$_AiTrashDisposablePatterns = @(
-    '*.log', '*.tmp', '*.swp', '*.swo', '*.bak', '*.orig',
-    '*.pyc', '*.class', '*~', '#*#', '*.DS_Store',
-    '*.pyenv-shim', '*.pyenv-source-shim', '.pyenv-shim*'
-)
-
-# Disposable directory prefixes — paths whose items are permanently deleted.
-$_AiTrashDisposablePaths = @(
-    [System.IO.Path]::GetTempPath().TrimEnd('\'),
-    "$env:TEMP",
-    "$env:TMP",
-    "$env:LOCALAPPDATA\Temp",
-    "$env:USERPROFILE\AppData\Local\Temp"
-)
-
-function _AiTrash-IsDisposable {
-    param([string]$Path)
-    $name = [System.IO.Path]::GetFileName($Path)
-    foreach ($pattern in $script:_AiTrashDisposablePatterns) {
-        if ($name -like $pattern) { return $true }
-    }
-    # Check disposable locations
-    try {
-        $abs = [System.IO.Path]::GetFullPath($Path)
-    } catch {
-        $abs = $Path
-    }
-    foreach ($dir in $script:_AiTrashDisposablePaths) {
-        if ([string]::IsNullOrWhiteSpace($dir)) { continue }
-        try {
-            $normDir = [System.IO.Path]::GetFullPath($dir).TrimEnd('\')
-        } catch {
-            continue
-        }
-        if ($abs.StartsWith($normDir + '\', [System.StringComparison]::OrdinalIgnoreCase) -or
-            $abs.Equals($normDir, [System.StringComparison]::OrdinalIgnoreCase)) {
-            return $true
-        }
-    }
-    return $false
 }
 
 # ─── AI process detection ──────────────────────────────────────────────────────
@@ -154,7 +112,62 @@ function _AiTrash-IsAiProcess {
     return $false
 }
 
-# ─── Metadata helpers ──────────────────────────────────────────────────────────
+# ─── Manifest helpers ──────────────────────────────────────────────────────────
+
+$_AiTrashManifestPath = "$env:USERPROFILE\.config\ai-trash\manifest.json"
+
+function _AiTrash-ReadManifest {
+    $path = $script:_AiTrashManifestPath
+    if (-not (Test-Path -LiteralPath $path)) { return @() }
+    try {
+        $json    = Get-Content -LiteralPath $path -Raw -Encoding UTF8 -ErrorAction Stop
+        $entries = $json | ConvertFrom-Json
+        if ($null -eq $entries) { return @() }
+        return @($entries)
+    } catch { return @() }
+}
+
+function _AiTrash-WriteManifest {
+    param($Entries)
+    $path = $script:_AiTrashManifestPath
+    $dir  = Split-Path $path -Parent
+    if (-not (Test-Path -LiteralPath $dir)) {
+        $null = New-Item -ItemType Directory -Path $dir -Force -ErrorAction SilentlyContinue
+    }
+    try {
+        $arr = @($Entries)
+        if ($arr.Count -eq 0) {
+            $json = '[]'
+        } elseif ($arr.Count -eq 1) {
+            $json = '[' + ($arr[0] | ConvertTo-Json -Depth 5 -Compress) + ']'
+        } else {
+            $json = $arr | ConvertTo-Json -Depth 5
+        }
+        Set-Content -LiteralPath $path -Value $json -Encoding UTF8 -ErrorAction Stop
+    } catch { }
+}
+
+function _AiTrash-AddManifestEntry {
+    param(
+        [string]$OriginalPath,
+        [string]$DeletedAt,
+        [string]$DeletedBy,
+        [string]$DeletedByProcess,
+        [string]$OriginalSize
+    )
+    $entries = _AiTrash-ReadManifest
+    $entry   = [ordered]@{
+        'original-path'      = $OriginalPath
+        'deleted-at'         = $DeletedAt
+        'deleted-by'         = $DeletedBy
+        'deleted-by-process' = $DeletedByProcess
+        'original-size'      = $OriginalSize
+    }
+    $entries += $entry
+    _AiTrash-WriteManifest -Entries $entries
+}
+
+# ─── Metadata helpers (legacy folder) ─────────────────────────────────────────
 
 # Detect whether the volume hosting $Path uses NTFS.
 function _AiTrash-IsNtfs {
@@ -212,31 +225,6 @@ function _AiTrash-WriteMeta {
     try {
         $meta | ConvertTo-Json | Set-Content -LiteralPath $sidecar -Encoding UTF8 -ErrorAction Stop
     } catch { }
-}
-
-function _AiTrash-ReadMeta {
-    param(
-        [string]$ItemPath,
-        [string]$Key    # e.g. 'original-path'
-    )
-
-    # Try NTFS ADS first.
-    try {
-        $val = Get-Content -LiteralPath $ItemPath -Stream "ai-trash.$Key" -ErrorAction Stop
-        # Get-Content returns an array of lines; join and trim.
-        return ($val -join '').Trim()
-    } catch { }
-
-    # Fall back to sidecar JSON.
-    $sidecar = Join-Path (Split-Path $ItemPath -Parent) ('.' + (Split-Path $ItemPath -Leaf) + '.ai-trash')
-    if (Test-Path -LiteralPath $sidecar) {
-        try {
-            $obj = Get-Content -LiteralPath $sidecar -Raw -Encoding UTF8 | ConvertFrom-Json
-            return $obj.$Key
-        } catch { }
-    }
-
-    return $null
 }
 
 # ─── Trash directory helpers ───────────────────────────────────────────────────
@@ -330,32 +318,10 @@ function _AiTrash-MoveToAiTrash {
         }
 
         try {
-            $absPath  = [System.IO.Path]::GetFullPath($f)
+            $absPath = [System.IO.Path]::GetFullPath($f)
         } catch {
             $absPath = $f
         }
-
-        $trashDir = _AiTrash-GetTrashDir -FilePath $f
-
-        # If trash dir cannot be created, fall through to permanent deletion.
-        try {
-            $null = New-Item -ItemType Directory -Path $trashDir -Force -ErrorAction Stop
-        } catch {
-            Write-Warning "Remove-Item: trash unavailable for '$f', deleting permanently"
-            Microsoft.PowerShell.Management\Remove-Item -LiteralPath $f -Recurse -Force -ErrorAction SilentlyContinue
-            continue
-        }
-
-        $destPath = _AiTrash-GetUniqueTrashPath -TrashDir $trashDir -Name (Split-Path $f -Leaf)
-
-        # Capture size before the move (skip for directories — too slow).
-        $origSize = ''
-        try {
-            $item = Get-Item -LiteralPath $f -ErrorAction Stop
-            if (-not $item.PSIsContainer) {
-                $origSize = $item.Length.ToString()
-            }
-        } catch { }
 
         # Determine the deleting process name by walking up from parent.
         $deletedByProcess = ''
@@ -365,6 +331,62 @@ function _AiTrash-MoveToAiTrash {
             ) -ErrorAction Stop
             $deletedByProcess = [System.IO.Path]::GetFileNameWithoutExtension($parentProc.Name)
         } catch { }
+
+        $deletedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $deletedBy = $env:USERNAME
+
+        # Capture size before deletion (skip for directories — too slow).
+        $origSize = ''
+        try {
+            $itemObj = Get-Item -LiteralPath $f -ErrorAction Stop
+            if (-not $itemObj.PSIsContainer) {
+                $origSize = $itemObj.Length.ToString()
+            }
+        } catch { }
+
+        # Primary path: send to the real Windows Recycle Bin via VisualBasic.FileIO.
+        $sentToRecycleBin = $false
+        try {
+            $itemObj = Get-Item -LiteralPath $f -ErrorAction Stop
+            if ($itemObj.PSIsContainer) {
+                [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory(
+                    $absPath,
+                    [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs,
+                    [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin
+                )
+            } else {
+                [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile(
+                    $absPath,
+                    [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs,
+                    [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin
+                )
+            }
+            $sentToRecycleBin = $true
+        } catch { }
+
+        if ($sentToRecycleBin) {
+            if ($Verbose) { Write-Host $f }
+            _AiTrash-AddManifestEntry `
+                -OriginalPath     $absPath `
+                -DeletedAt        $deletedAt `
+                -DeletedBy        $deletedBy `
+                -DeletedByProcess $deletedByProcess `
+                -OriginalSize     $origSize
+            continue
+        }
+
+        # Fallback: move to legacy custom folder (cross-volume, permissions failure, etc.).
+        $trashDir = _AiTrash-GetTrashDir -FilePath $f
+
+        try {
+            $null = New-Item -ItemType Directory -Path $trashDir -Force -ErrorAction Stop
+        } catch {
+            Write-Warning "Remove-Item: trash unavailable for '$f', deleting permanently"
+            Microsoft.PowerShell.Management\Remove-Item -LiteralPath $f -Recurse -Force -ErrorAction SilentlyContinue
+            continue
+        }
+
+        $destPath = _AiTrash-GetUniqueTrashPath -TrashDir $trashDir -Name (Split-Path $f -Leaf)
 
         try {
             Move-Item -LiteralPath $f -Destination $destPath -ErrorAction Stop
@@ -376,16 +398,13 @@ function _AiTrash-MoveToAiTrash {
 
         if ($Verbose) { Write-Host $f }
 
-        $deletedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-        $deletedBy = $env:USERNAME
-
         _AiTrash-WriteMeta `
-            -DestPath        $destPath `
-            -OriginalPath    $absPath `
-            -DeletedAt       $deletedAt `
-            -DeletedBy       $deletedBy `
+            -DestPath         $destPath `
+            -OriginalPath     $absPath `
+            -DeletedAt        $deletedAt `
+            -DeletedBy        $deletedBy `
             -DeletedByProcess $deletedByProcess `
-            -OriginalSize    $origSize
+            -OriginalSize     $origSize
 
         # Touch the mtime so 30-day cleanup uses trash-time, not original mtime.
         try {
@@ -495,32 +514,16 @@ function Remove-Item {
         }
         # 'always' mode: $isAi stays false but we still trash everything.
 
-        # Suppress interactive prompts when not in an interactive session.
-        $interactive = [Environment]::UserInteractive -and [Console]::IsInputRedirected -eq $false
-
-        # Separate paths into disposable (permanent delete) and trash buckets.
-        $deleteNow = [System.Collections.Generic.List[string]]::new()
+        # Validate paths exist (for non-Force calls).
         $trashList = [System.Collections.Generic.List[string]]::new()
-
         foreach ($f in $allPaths) {
             if (-not (Test-Path -LiteralPath $f) -and -not $hasForce) {
                 Write-Error "Remove-Item: cannot find path '$f'"
                 continue
             }
-            if (_AiTrash-IsDisposable -Path $f) {
-                $deleteNow.Add($f)
-            } else {
-                $trashList.Add($f)
-            }
+            $trashList.Add($f)
         }
 
-        # Permanent deletion of disposable files.
-        if ($deleteNow.Count -gt 0) {
-            Microsoft.PowerShell.Management\Remove-Item -LiteralPath $deleteNow.ToArray() `
-                -Recurse:$hasRecurse -Force:$hasForce -ErrorAction SilentlyContinue
-        }
-
-        # Trash non-disposable files.
         if ($trashList.Count -gt 0) {
             if ($safePassthrough) {
                 _AiTrash-MoveToRecycleBin -Paths $trashList.ToArray() -HasForce $hasForce

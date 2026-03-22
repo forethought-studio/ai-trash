@@ -11,3 +11,6 @@ demo.tape
 # Queue runtime state
 .queue/queue.lock
 .backlog/taskwarrior/taskchampion.sqlite3
+
+.backlog/taskwarrior/taskchampion.sqlite3-shm
+.backlog/taskwarrior/taskchampion.sqlite3-wal
