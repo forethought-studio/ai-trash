@@ -6,13 +6,27 @@ PLATFORM=$(uname -s)
 
 # Match the same BIN detection as install.sh
 if [[ "$PLATFORM" == "Darwin" ]]; then
+  CANDIDATES=(/opt/homebrew/bin /usr/local/bin)
+else
+  CANDIDATES=(/usr/local/bin)
+fi
+
+BIN=""
+while IFS= read -r dir; do
+  for c in "${CANDIDATES[@]}"; do
+    if [[ "$dir" == "$c" && -d "$c" ]]; then
+      BIN="$c"
+      break 2
+    fi
+  done
+done < <(echo "$PATH" | tr ':' '\n')
+
+if [[ -z "$BIN" ]]; then
   if [[ -d /opt/homebrew/bin ]]; then
     BIN=/opt/homebrew/bin
   else
     BIN=/usr/local/bin
   fi
-else
-  BIN=/usr/local/bin
 fi
 
 echo "Uninstalling ai-trash..."
@@ -64,6 +78,23 @@ if [[ -f "$BIN/rm_wrapper_old.sh" ]]; then
   sudo mv "$BIN/rm_wrapper_old.sh" "$BIN/rm"
   echo "  restored previous $BIN/rm"
 fi
+
+# Clean up stale ai-trash installs from other candidate directories
+for c in "${CANDIDATES[@]}"; do
+  [[ "$c" == "$BIN" ]] && continue
+  if [[ -f "$c/rm_wrapper.sh" ]] && grep -q "ai-trash" "$c/rm_wrapper.sh" 2>/dev/null; then
+    echo "  removing stale install from $c"
+    for f in rm_wrapper.sh ai-trash ai-trash-cleanup; do
+      sudo rm -f "$c/$f"
+    done
+    for cmd in rm rmdir; do
+      target=$(readlink "$c/$cmd" 2>/dev/null || true)
+      if [[ "$target" == *rm_wrapper* ]]; then
+        sudo rm -f "$c/$cmd"
+      fi
+    done
+  fi
+done
 
 # ─── Done ──────────────────────────────────────────────────────────────
 

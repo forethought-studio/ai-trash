@@ -21,31 +21,42 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ─── Detect install prefix ─────────────────────────────────────────────
 
 if [[ "$PLATFORM" == "Darwin" ]]; then
-  # Apple Silicon Homebrew uses /opt/homebrew, Intel uses /usr/local
+  # macOS candidates — PATH ordering decides which wins
+  CANDIDATES=(/opt/homebrew/bin /usr/local/bin)
+else
+  CANDIDATES=(/usr/local/bin)
+fi
+
+# Walk PATH to find which candidate appears first
+BIN=""
+while IFS= read -r dir; do
+  for c in "${CANDIDATES[@]}"; do
+    if [[ "$dir" == "$c" && -d "$c" ]]; then
+      BIN="$c"
+      break 2
+    fi
+  done
+done < <(echo "$PATH" | tr ':' '\n')
+
+# Fallback if no candidate is in PATH
+if [[ -z "$BIN" ]]; then
   if [[ -d /opt/homebrew/bin ]]; then
     BIN=/opt/homebrew/bin
   else
     BIN=/usr/local/bin
   fi
-else
-  # Linux: prefer /usr/local/bin (no sudo needed if user owns it, else sudo)
-  BIN=/usr/local/bin
+  echo "warning: neither /opt/homebrew/bin nor /usr/local/bin found in PATH."
+  echo "         Installing to $BIN — add it to your PATH for rm to work."
 fi
 
 # ─── Preflight ─────────────────────────────────────────────────────────
 
 # Check that $BIN comes before /bin in PATH
-if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN"; then
-  echo "warning: $BIN is not in your PATH — the rm override won't take effect."
-  echo "         Add this to your shell config and re-run:"
-  echo "         export PATH=\"$BIN:\$PATH\""
-else
-  path_our=$(echo "$PATH" | tr ':' '\n' | grep -nx "$BIN"  | head -1 | cut -d: -f1)
-  path_bin=$(echo "$PATH" | tr ':' '\n' | grep -nx "/bin$" | head -1 | cut -d: -f1)
-  if [[ -n "$path_our" && -n "$path_bin" && "$path_our" -gt "$path_bin" ]]; then
-    echo "warning: /bin appears before $BIN in your PATH."
-    echo "         The rm override won't intercept calls until this is fixed."
-  fi
+path_our=$(echo "$PATH" | tr ':' '\n' | grep -nx "$BIN"  | head -1 | cut -d: -f1)
+path_bin=$(echo "$PATH" | tr ':' '\n' | grep -nx "/bin$" | head -1 | cut -d: -f1)
+if [[ -n "$path_our" && -n "$path_bin" && "$path_our" -gt "$path_bin" ]]; then
+  echo "warning: /bin appears before $BIN in your PATH."
+  echo "         The rm override won't intercept calls until this is fixed."
 fi
 
 # ─── Install binaries ──────────────────────────────────────────────────
@@ -139,17 +150,20 @@ echo "  ai-trash list           → show everything in AI trash"
 echo "  ai-trash restore <name> → restore to original location"
 echo "  ai-trash empty          → permanently delete all AI trash"
 
-# ─── Post-install verification ─────────────────────────────────────────
-# Confirm that `rm` in the current PATH resolves to our newly installed wrapper.
-# On Apple Silicon Macs that have both /usr/local/bin and /opt/homebrew/bin in PATH,
-# an old rm at the earlier directory silently shadows the install. Fix it automatically.
-actual_rm=$(which rm 2>/dev/null || true)
-if [[ "$actual_rm" != "$BIN/rm" && -n "$actual_rm" ]]; then
-  shadow_dir=$(dirname "$actual_rm")
-  echo "  fixing shadow: $actual_rm also points to an old wrapper — updating it"
-  sudo cp "$BIN/rm_wrapper.sh" "$shadow_dir/rm_wrapper.sh"
-  sudo chmod 755 "$shadow_dir/rm_wrapper.sh"
-  sudo ln -sf "$shadow_dir/rm_wrapper.sh" "$shadow_dir/rm"
-  sudo ln -sf "$shadow_dir/rm_wrapper.sh" "$shadow_dir/rmdir"
-  echo "  $shadow_dir/rm → rm_wrapper.sh (updated)"
-fi
+# ─── Stale install cleanup ─────────────────────────────────────────────
+# Remove any ai-trash wrappers left in other candidate directories.
+for c in "${CANDIDATES[@]}"; do
+  [[ "$c" == "$BIN" ]] && continue
+  if [[ -f "$c/rm_wrapper.sh" ]] && grep -q "ai-trash" "$c/rm_wrapper.sh" 2>/dev/null; then
+    echo "  removing stale install from $c"
+    for f in rm_wrapper.sh ai-trash ai-trash-cleanup; do
+      sudo rm -f "$c/$f"
+    done
+    for cmd in rm rmdir; do
+      target=$(readlink "$c/$cmd" 2>/dev/null || true)
+      if [[ "$target" == *rm_wrapper* ]]; then
+        sudo rm -f "$c/$cmd"
+      fi
+    done
+  fi
+done
