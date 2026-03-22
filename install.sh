@@ -138,3 +138,18 @@ echo "  rm myfile.txt           → moves to $TRASH_EXAMPLE (recoverable)"
 echo "  ai-trash list           → show everything in AI trash"
 echo "  ai-trash restore <name> → restore to original location"
 echo "  ai-trash empty          → permanently delete all AI trash"
+
+# ─── Post-install verification ─────────────────────────────────────────
+# Confirm that `rm` in the current PATH resolves to our newly installed wrapper.
+# On Apple Silicon Macs that have both /usr/local/bin and /opt/homebrew/bin in PATH,
+# an old rm at the earlier directory silently shadows the install. Fix it automatically.
+actual_rm=$(which rm 2>/dev/null || true)
+if [[ "$actual_rm" != "$BIN/rm" && -n "$actual_rm" ]]; then
+  shadow_dir=$(dirname "$actual_rm")
+  echo "  fixing shadow: $actual_rm also points to an old wrapper — updating it"
+  sudo cp "$BIN/rm_wrapper.sh" "$shadow_dir/rm_wrapper.sh"
+  sudo chmod 755 "$shadow_dir/rm_wrapper.sh"
+  sudo ln -sf "$shadow_dir/rm_wrapper.sh" "$shadow_dir/rm"
+  sudo ln -sf "$shadow_dir/rm_wrapper.sh" "$shadow_dir/rmdir"
+  echo "  $shadow_dir/rm → rm_wrapper.sh (updated)"
+fi

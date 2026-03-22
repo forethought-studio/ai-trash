@@ -114,11 +114,11 @@ _stat_size() { [[ "$PLATFORM" == "Darwin" ]] && stat -f %z "$1" 2>/dev/null || s
 _write_meta() {
   local file="$1" orig_path="$2" deleted_at="$3" deleted_by="$4" deleted_proc="$5" orig_size="$6"
   if [[ "$PLATFORM" == "Darwin" ]]; then
-    xattr -w com.ai-trash.original-path     "$orig_path"   "$file" 2>/dev/null
-    xattr -w com.ai-trash.deleted-at        "$deleted_at"  "$file" 2>/dev/null
-    xattr -w com.ai-trash.deleted-by        "$deleted_by"  "$file" 2>/dev/null
-    xattr -w com.ai-trash.deleted-by-process "$deleted_proc" "$file" 2>/dev/null
-    [[ -n "$orig_size" ]] && xattr -w com.ai-trash.original-size "$orig_size" "$file" 2>/dev/null
+    xattr -w com.ai-trash.original-path     "$orig_path"   "$file" >/dev/null 2>&1
+    xattr -w com.ai-trash.deleted-at        "$deleted_at"  "$file" >/dev/null 2>&1
+    xattr -w com.ai-trash.deleted-by        "$deleted_by"  "$file" >/dev/null 2>&1
+    xattr -w com.ai-trash.deleted-by-process "$deleted_proc" "$file" >/dev/null 2>&1
+    [[ -n "$orig_size" ]] && xattr -w com.ai-trash.original-size "$orig_size" "$file" >/dev/null 2>&1
   else
     printf 'original-path=%s\ndeleted-at=%s\ndeleted-by=%s\ndeleted-by-process=%s\noriginal-size=%s\n' \
       "$orig_path" "$deleted_at" "$deleted_by" "$deleted_proc" "$orig_size" \

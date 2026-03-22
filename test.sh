@@ -158,17 +158,17 @@ else
   _fail "always: directory not found in ai-trash. Contents: $(ls $TEST_TRASH/ 2>/dev/null || echo 'empty')"
 fi
 
-_section "rm_wrapper: disposable patterns — .log file permanently deleted"
-_set_mode always
+_section "rm_wrapper: .log file goes to ai-trash (not permanently deleted)"
+# Disposable patterns were removed — all files go to trash regardless of extension.
 f_log="$WORK_DIR/debug.log"
 echo "log content" > "$f_log"
 before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
-_rm "$f_log"
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor bash "$REPO_DIR/rm_wrapper.sh" "$f_log" 2>/dev/null
 after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
-if [[ "$after_count" -eq "$before_count" ]] && [[ ! -f "$f_log" ]]; then
-  _pass "disposable: .log file permanently deleted (not in ai-trash)"
+if [[ "$after_count" -gt "$before_count" ]] && [[ ! -f "$f_log" ]]; then
+  _pass ".log file moved to ai-trash (not permanently deleted)"
 else
-  _fail "disposable: unexpected — before=$before_count after=$after_count file_exists=$(test -f $f_log && echo yes || echo no)"
+  _fail ".log not trashed — before=$before_count after=$after_count file_exists=$(test -f $f_log && echo yes || echo no)"
 fi
 
 _section "rm_wrapper: selective mode — non-AI rm passes through to /bin/rm"
@@ -278,6 +278,29 @@ if echo "$out" | grep -qiE "usage|illegal option|remove"; then
   _pass "--help passed through to /bin/rm"
 else
   _skip "--help: output didn't match expected pattern (may vary by platform): $out"
+fi
+
+_section "rm_wrapper: no stdout leak when xattr errors"
+# xattr on macOS prints errors to stdout (not stderr), so 2>/dev/null is insufficient.
+# The fix is >/dev/null 2>&1 on all xattr calls in _write_meta.
+# We inject a fake xattr that unconditionally emits to stdout, then verify rm is silent.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  _fake_xattr_dir="$WORK_DIR/fake-xattr"
+  mkdir -p "$_fake_xattr_dir"
+  printf '#!/bin/bash\necho "xattr-stdout-leak: $*"\n/usr/bin/xattr "$@"\n' > "$_fake_xattr_dir/xattr"
+  chmod +x "$_fake_xattr_dir/xattr"
+  _leak_test_file="$WORK_DIR/stdout-leak-test.txt"
+  echo "test" > "$_leak_test_file"
+  # TERM_PROGRAM=cursor triggers AI detection → move_to_ai_trash → _write_meta → xattr calls
+  _leak_stdout=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
+    PATH="$_fake_xattr_dir:$PATH" bash "$REPO_DIR/rm_wrapper.sh" "$_leak_test_file" 2>/dev/null)
+  if [[ -z "$_leak_stdout" ]]; then
+    _pass "no stdout leak: xattr output suppressed"
+  else
+    _fail "stdout leak: rm produced unexpected output: $_leak_stdout"
+  fi
+else
+  _skip "xattr stdout leak test: macOS only"
 fi
 
 # ─── Summary ───────────────────────────────────────────────────────────
