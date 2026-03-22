@@ -23,7 +23,7 @@ FAILURES=0
 WORK_DIR="$HOME/ai-trash-test-$$"
 TEST_HOME="$WORK_DIR/home"
 if [[ "$(uname -s)" == "Darwin" ]]; then
-  TEST_TRASH="$TEST_HOME/.Trash/ai-trash"
+  TEST_TRASH="$TEST_HOME/.Trash"
   TEST_SYSTEM_TRASH="$TEST_HOME/.Trash"
   mkdir -p "$WORK_DIR" "$TEST_HOME/.Trash"
 else
@@ -256,13 +256,13 @@ after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
   || _fail "empty --older-than 1: item count changed ($before_count → $after_count)"
 
 _section "ai-trash CLI: empty --force"
-before=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before=$(_ai_trash status 2>/dev/null | grep "^Items:" | awk '{print $2}' || echo 0)
 _ai_trash empty --force >/dev/null 2>&1
-after=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
-if [[ "$after" -eq 0 ]]; then
+out=$(_ai_trash status)
+if echo "$out" | grep -q "AI trash is empty"; then
   _pass "empty --force: trash cleared (was $before items)"
 else
-  _fail "empty --force: $after items remain"
+  _fail "empty --force: items still remain in AI trash. Status: $out"
 fi
 
 _section "ai-trash CLI: status after empty"

@@ -9,7 +9,7 @@
 
 PLATFORM=$(uname -s)
 if [[ "$PLATFORM" == "Darwin" ]]; then
-  TRASH_DIR="$HOME/.Trash/ai-trash"
+  TRASH_DIR="$HOME/.Trash"
 else
   TRASH_DIR="$HOME/.local/share/Trash/ai-trash"
 fi
@@ -57,17 +57,14 @@ _xattr() {
 _each_ai_trash_item() {
   local mtime_arg="${1:-}"
   if [[ "$PLATFORM" == "Darwin" ]]; then
-    # New-style: items directly in ~/.Trash/ that carry our xattr
+    # macOS: scan ~/.Trash/ and yield only items tagged with our xattr
     while IFS= read -r -d '' item; do
       xattr -p com.ai-trash.original-path "$item" >/dev/null 2>&1 \
         && printf '%s\0' "$item"
-    done < <(find "$HOME/.Trash" -maxdepth 1 -mindepth 1 -not -name 'ai-trash' \
+    done < <(find "$TRASH_DIR" -maxdepth 1 -mindepth 1 \
                ${mtime_arg:+-mtime +"$mtime_arg"} -print0 2>/dev/null)
-    # Legacy: items in ~/.Trash/ai-trash/
-    [[ -d "$TRASH_DIR" ]] && find "$TRASH_DIR" -maxdepth 1 -mindepth 1 \
-      ${mtime_arg:+-mtime +"$mtime_arg"} -print0 2>/dev/null
   else
-    # Linux: items in ~/.local/share/Trash/ai-trash/
+    # Linux: all items in ~/.local/share/Trash/ai-trash/ are ours
     [[ -d "$TRASH_DIR" ]] && find "$TRASH_DIR" -maxdepth 1 -mindepth 1 \
       ${mtime_arg:+-mtime +"$mtime_arg"} -print0 2>/dev/null
   fi
@@ -143,10 +140,13 @@ cmd_restore() {
   local item=""
 
   if [[ -e "$TRASH_DIR/$target" || -L "$TRASH_DIR/$target" ]]; then
-    item="$TRASH_DIR/$target"
-  elif [[ "$PLATFORM" == "Darwin" && (-e "$HOME/.Trash/$target" || -L "$HOME/.Trash/$target") ]]; then
-    xattr -p com.ai-trash.original-path "$HOME/.Trash/$target" >/dev/null 2>&1 \
-      && item="$HOME/.Trash/$target"
+    if [[ "$PLATFORM" == "Darwin" ]]; then
+      # ~/.Trash/ holds mixed items; verify it's ours before claiming it
+      xattr -p com.ai-trash.original-path "$TRASH_DIR/$target" >/dev/null 2>&1 \
+        && item="$TRASH_DIR/$target"
+    else
+      item="$TRASH_DIR/$target"
+    fi
   fi
   if [[ -z "$item" ]]; then
     if [[ -e "$target" || -L "$target" ]]; then
@@ -265,11 +265,7 @@ cmd_status() {
   [[ $total_bytes -gt 0 ]] && printf "Size:     %s\n" "$(_fmt_size "$total_bytes")"
   [[ -n "$oldest_name" ]] && printf "Oldest:   %s (%s)\n" "$oldest_name" "${oldest_time%T*}"
   [[ -n "$newest_name" ]] && printf "Newest:   %s (%s)\n" "$newest_name" "${newest_time%T*}"
-  if [[ "$PLATFORM" == "Darwin" ]]; then
-    printf "Location: %s\n" "$HOME/.Trash/"
-  else
-    printf "Location: %s\n" "$TRASH_DIR"
-  fi
+  printf "Location: %s\n" "$TRASH_DIR"
 }
 
 # ─── dispatch ──────────────────────────────────────────────────────────

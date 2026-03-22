@@ -6,7 +6,7 @@ SCRIPT_NAME=$(basename "$0")
 
 # Trash dirs differ by platform
 if [[ "$PLATFORM" == "Darwin" ]]; then
-  BOOT_TRASH_DIR="$HOME/.Trash/ai-trash"
+  BOOT_TRASH_DIR="$HOME/.Trash"
   BOOT_SYSTEM_TRASH_DIR="$HOME/.Trash"
 else
   BOOT_TRASH_DIR="$HOME/.local/share/Trash/ai-trash"
@@ -127,7 +127,7 @@ _write_meta() {
 }
 
 # ─── Resolve trash directories ─────────────────────────────────────────
-# macOS ai-trash:  boot → ~/.Trash/ai-trash          other → <mp>/.Trashes/<uid>/ai-trash
+# macOS ai-trash:  boot → ~/.Trash (xattr-tagged)    other → <mp>/.Trashes/<uid>/ai-trash
 # Linux ai-trash:  boot → ~/.local/share/Trash/ai-trash  other → <mp>/.Trash-<uid>/ai-trash
 # macOS system:    boot → ~/.Trash                   other → <mp>/.Trashes/<uid>
 # Linux system:    boot → ~/.local/share/Trash/files  other → <mp>/.Trash-<uid>/files
@@ -342,7 +342,7 @@ for path in paths:
         print('')
 PYEOF
         ) || py_out=""
-        rm -f "$paths_tmp"
+        /bin/rm -f "$paths_tmp"
       fi
 
       # Map result paths back to source files (one line per entry, empty = failure)
