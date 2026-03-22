@@ -129,8 +129,8 @@ xattr -p com.ai-trash.deleted-by     ~/.Trash/myfile.txt
 xattr -p com.ai-trash.original-size  ~/.Trash/myfile.txt
 xattr -p com.ai-trash.deleted-by-process  ~/.Trash/myfile.txt
 
-# Legacy location (external drives, Linux, or pre-update items)
-xattr -p com.ai-trash.original-path  ~/.Trash/ai-trash/myfile.txt
+# Linux / external drives
+xattr -p com.ai-trash.original-path  ~/.local/share/Trash/ai-trash/myfile.txt
 ```
 
 ### Customising
