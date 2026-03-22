@@ -243,9 +243,9 @@ _mv_file_to_ai_trash_dir() {
 }
 
 # ─── Move files to ai-trash with metadata ──────────────────────────────
-# macOS boot volume: uses NSFileManager.trashItemAtURL for Finder Put Back support.
-# Files land in ~/.Trash/ with com.ai-trash.* xattrs. Falls back to mv on failure.
-# Other volumes and Linux: mv to ai-trash subdirectory (unchanged behaviour).
+# macOS boot volume: uses Finder (via osascript) so the OS writes DS_Store Put Back
+# metadata (ptbL/ptbN). Files land in ~/.Trash/ with com.ai-trash.* xattrs.
+# Falls back to mv on failure. Other volumes and Linux: mv to ai-trash subdirectory.
 move_to_ai_trash() {
   local result=0
   local deleted_at deleted_by deleted_proc
@@ -274,71 +274,58 @@ move_to_ai_trash() {
       fi
     done
 
-    # Batch-trash boot-volume files via NSFileManager
+    # Batch-trash boot-volume files via Finder (osascript) — Finder writes Put Back metadata
     if [[ ${#boot_srcs[@]} -gt 0 ]]; then
       local paths_tmp="" py_out=""
       paths_tmp=$(mktemp 2>/dev/null) || true
       if [[ -n "$paths_tmp" ]]; then
         printf '%s\0' "${boot_abs[@]}" > "$paths_tmp"
         py_out=$(python3 - "$paths_tmp" 2>/dev/null <<'PYEOF'
-import sys, os, ctypes, ctypes.util, pwd
+import sys, os, subprocess, pwd
 
 with open(sys.argv[1], 'rb') as fh:
     paths = [p.decode() for p in fh.read().split(b'\0') if p]
 
 home = os.environ.get('HOME', '')
-# Skip NSFileManager when HOME is overridden (e.g. test environments)
+# Skip Finder when HOME is overridden (e.g. test environments)
 if home != pwd.getpwuid(os.getuid()).pw_dir:
     for _ in paths:
         print('')
     sys.exit(0)
 
 trash_prefix = home + '/.Trash/'
-L = ctypes.cdll.LoadLibrary(ctypes.util.find_library('objc'))
-L.objc_getClass.restype = L.sel_registerName.restype = ctypes.c_void_p
-S = L.objc_msgSend
 
-def sel(n): return L.sel_registerName(n.encode())
-def cls(n): return L.objc_getClass(n.encode())
+def escape_as(s):
+    return s.replace('\\', '\\\\').replace('"', '\\"')
 
-def nsstr(s):
-    S.restype = ctypes.c_void_p
-    S.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p]
-    return S(cls('NSString'), sel('stringWithUTF8String:'), s.encode())
+items = ', '.join('POSIX file "' + escape_as(p) + '"' for p in paths)
+script = (
+    'set fileList to {' + items + '}\n'
+    'set output to ""\n'
+    'tell application "Finder"\n'
+    '  repeat with f in fileList\n'
+    '    try\n'
+    '      set t to (move f to trash)\n'
+    '      set output to output & POSIX path of (t as alias) & ASCII character 10\n'
+    '    on error\n'
+    '      set output to output & ASCII character 10\n'
+    '    end try\n'
+    '  end repeat\n'
+    'end tell\n'
+    'return output'
+)
 
-def nsurl(p):
-    ns_path = nsstr(p)  # compute BEFORE setting S.argtypes for fileURLWithPath: call
-    S.restype = ctypes.c_void_p
-    S.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
-    return S(cls('NSURL'), sel('fileURLWithPath:'), ns_path)
+try:
+    r = subprocess.run(['osascript'], input=script, capture_output=True, text=True, timeout=30)
+    result_lines = r.stdout.split('\n')
+except Exception:
+    result_lines = []
 
-def url_to_path(u):
-    S.restype = ctypes.c_void_p
-    S.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-    ns_path = S(u, sel('path'))
-    S.restype = ctypes.c_char_p
-    return S(ns_path, sel('UTF8String')).decode()
-
-S.restype = ctypes.c_void_p
-S.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-mgr = S(cls('NSFileManager'), sel('defaultManager'))
-trash_sel = sel('trashItemAtURL:resultingItemURL:error:')
-V = ctypes.c_void_p
-P = ctypes.POINTER(V)
-
-for path in paths:
-    try:
-        url = nsurl(path)  # compute url BEFORE setting S.argtypes for trash call
-        out = V(0); err = V(0)
-        S.restype = ctypes.c_bool
-        S.argtypes = [V, V, V, P, P]
-        ok = S(mgr, trash_sel, url, ctypes.byref(out), ctypes.byref(err))
-        if ok and out.value:
-            rp = url_to_path(out)
-            print(rp if rp.startswith(trash_prefix) else '')
-        else:
-            print('')
-    except Exception:
+for i in range(len(paths)):
+    rp = result_lines[i].strip().rstrip('/') if i < len(result_lines) else ''
+    if rp and rp.startswith(trash_prefix):
+        print(rp)
+    else:
         print('')
 PYEOF
         ) || py_out=""
@@ -355,11 +342,11 @@ PYEOF
         local f="${boot_srcs[$i]}" abs="${boot_abs[$i]}" sz="${boot_sizes[$i]}"
         local rp="${result_paths[$i]:-}"
         if [[ -n "$rp" && (-e "$rp" || -L "$rp") ]]; then
-          # NSFileManager succeeded: file is in ~/.Trash/, stamp with our xattrs
+          # Finder succeeded: file is in ~/.Trash/, stamp with our xattrs
           _write_meta "$rp" "$abs" "$deleted_at" "$deleted_by" "$deleted_proc" "$sz"
           touch "$rp" 2>/dev/null
         else
-          # NSFileManager failed or unavailable: fall back to mv into ai-trash subdir
+          # Finder unavailable or failed: fall back to mv into ai-trash subdir
           _mv_file_to_ai_trash_dir "$f" "$abs" "$deleted_at" "$deleted_by" "$deleted_proc" "$sz" \
             || result=1
         fi
