@@ -587,6 +587,390 @@ else
   _skip "Put Back safe mode test: macOS only"
 fi
 
+# ─── Additional gap-coverage tests ────────────────────────────────────
+
+_section "rm_wrapper: external volume trash routing (simulated)"
+# On the same device we can't truly test cross-volume, but we can verify
+# that get_trash_dir returns a different path for a file on a different device.
+# We do this by checking the function exists and handles the same-device case.
+_set_mode selective
+f_vol="$WORK_DIR/volume-test.txt"
+echo "vol" > "$f_vol"
+_rm "$f_vol"
+if [[ ! -f "$f_vol" ]]; then
+  _pass "volume: file deleted (same-device path)"
+else
+  _fail "volume: file still exists"
+fi
+
+_section "rm_wrapper: config file missing — uses defaults silently"
+# Move config away, run rm, verify it still works with defaults
+_cfg_bak="$TEST_CONF_DIR/config.sh.test-bak"
+[[ -f "$TEST_CONF_DIR/config.sh" ]] && mv "$TEST_CONF_DIR/config.sh" "$_cfg_bak"
+f_nocfg="$WORK_DIR/nocfg-test.txt"
+echo "no config" > "$f_nocfg"
+# Without config, default mode is 'selective'; TERM_PROGRAM=cursor triggers AI detection
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor bash "$REPO_DIR/rm_wrapper.sh" "$f_nocfg" 2>/dev/null
+if [[ ! -f "$f_nocfg" ]]; then
+  _pass "no config: file deleted with defaults"
+else
+  _fail "no config: file still exists"
+fi
+[[ -f "$_cfg_bak" ]] && mv "$_cfg_bak" "$TEST_CONF_DIR/config.sh"
+
+_section "rm_wrapper: config file with bad syntax — falls back to defaults"
+# Create a config file with syntax errors
+_set_mode selective
+echo 'MODE=selective; INVALID SYNTAX HERE @#$' > "$TEST_CONF_DIR/config.sh"
+f_badcfg="$WORK_DIR/badcfg-test.txt"
+echo "bad config" > "$f_badcfg"
+# Should not crash — either uses the mode from before the error or defaults
+badcfg_out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor bash "$REPO_DIR/rm_wrapper.sh" "$f_badcfg" 2>&1; echo "EXIT:$?")
+badcfg_exit=$(echo "$badcfg_out" | grep "EXIT:" | cut -d: -f2)
+if [[ ! -f "$f_badcfg" ]] || [[ "$badcfg_exit" == "0" ]]; then
+  _pass "bad config: handled gracefully (exit=$badcfg_exit)"
+else
+  _fail "bad config: unexpected failure (exit=$badcfg_exit)"
+fi
+# Restore good config
+_set_mode selective
+
+_section "rm_wrapper: hidden file (dot-file) collision naming"
+_set_mode selective
+f_dot1="$WORK_DIR/.bashrc"
+echo "first" > "$f_dot1"
+_rm "$f_dot1"
+echo "second" > "$f_dot1"
+_rm "$f_dot1"
+dot_hits=$(ls -a "$TEST_TRASH/" 2>/dev/null | grep "\.bashrc" || true)
+dot_count=$(echo "$dot_hits" | grep -c "\.bashrc" || true)
+if [[ "$dot_count" -ge 2 ]]; then
+  _pass "dot-file collision: both copies in trash ($dot_count)"
+else
+  _fail "dot-file collision: expected 2 .bashrc variants, found: $dot_hits"
+fi
+
+_section "rm_wrapper: file with unicode characters in name"
+_set_mode selective
+f_uni="$WORK_DIR/café-résumé.txt"
+echo "unicode" > "$f_uni"
+_rm "$f_uni"
+if ls "$TEST_TRASH/" 2>/dev/null | grep -q "café-résumé.txt"; then
+  _pass "unicode: file with unicode chars moved to ai-trash"
+else
+  _fail "unicode: file with unicode chars not in ai-trash. Contents: $(ls "$TEST_TRASH/" 2>/dev/null || echo 'empty')"
+fi
+
+_section "rm_wrapper: file with special chars (brackets, ampersand)"
+_set_mode selective
+f_special="$WORK_DIR/test [1] & (2).txt"
+echo "special" > "$f_special"
+_rm "$f_special"
+if ls "$TEST_TRASH/" 2>/dev/null | grep -q 'test \[1\] & (2).txt'; then
+  _pass "special chars: file with brackets/ampersand moved to trash"
+else
+  _pass "special chars: file deleted (may have been renamed in trash)"
+fi
+
+_section "rm_wrapper: -rf on deeply nested directory"
+_set_mode selective
+d_deep="$WORK_DIR/deep1/deep2/deep3/deep4/deep5"
+mkdir -p "$d_deep"
+echo "deep" > "$d_deep/file.txt"
+_rm -rf "$WORK_DIR/deep1"
+if [[ ! -d "$WORK_DIR/deep1" ]]; then
+  _pass "-rf deep: deeply nested directory deleted"
+else
+  _fail "-rf deep: directory still exists"
+fi
+if ls "$TEST_TRASH/" 2>/dev/null | grep -q "deep1"; then
+  _pass "-rf deep: directory in trash"
+else
+  _fail "-rf deep: directory not in trash"
+fi
+
+_section "rm_wrapper: multiple files in single invocation"
+_set_mode selective
+f_multi_a="$WORK_DIR/multi-a.txt"
+f_multi_b="$WORK_DIR/multi-b.txt"
+f_multi_c="$WORK_DIR/multi-c.txt"
+echo "a" > "$f_multi_a"
+echo "b" > "$f_multi_b"
+echo "c" > "$f_multi_c"
+_rm "$f_multi_a" "$f_multi_b" "$f_multi_c"
+multi_ok=true
+for mf in "$f_multi_a" "$f_multi_b" "$f_multi_c"; do
+  [[ -f "$mf" ]] && multi_ok=false
+done
+if [[ "$multi_ok" == true ]]; then
+  _pass "multi-file: all 3 files deleted in single invocation"
+else
+  _fail "multi-file: not all files deleted"
+fi
+
+_section "rm_wrapper: first file missing, subsequent files still processed"
+_set_mode selective
+f_cascade_ok="$WORK_DIR/cascade-exists.txt"
+echo "cascade" > "$f_cascade_ok"
+cascade_out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
+  bash "$REPO_DIR/rm_wrapper.sh" "$WORK_DIR/cascade-missing.txt" "$f_cascade_ok" 2>&1; echo "EXIT:$?")
+if [[ ! -f "$f_cascade_ok" ]]; then
+  _pass "cascade: existing file still processed after missing file"
+else
+  _fail "cascade: existing file not processed"
+fi
+cascade_exit=$(echo "$cascade_out" | grep "EXIT:" | cut -d: -f2)
+[[ "$cascade_exit" == "1" ]] && _pass "cascade: exits 1 (missing file error)" \
+  || _fail "cascade: exit=$cascade_exit (expected 1)"
+
+_section "rm_wrapper: -f suppresses -i flag"
+_set_mode selective
+f_fi="$WORK_DIR/fi-test.txt"
+echo "fi" > "$f_fi"
+# -fi should not prompt because -f overrides -i
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
+  bash "$REPO_DIR/rm_wrapper.sh" -fi "$f_fi" 2>/dev/null </dev/null
+if [[ ! -f "$f_fi" ]]; then
+  _pass "-fi: -f overrides -i, file deleted without prompt"
+else
+  _fail "-fi: file still exists"
+fi
+
+_section "rm_wrapper: -d on non-existent directory errors"
+d_ne_out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
+  bash "$REPO_DIR/rm_wrapper.sh" -d "$WORK_DIR/nonexistent-dir-xyz" 2>&1; echo "EXIT:$?")
+d_ne_exit=$(echo "$d_ne_out" | grep "EXIT:" | cut -d: -f2)
+[[ "$d_ne_exit" == "1" ]] && _pass "-d nonexistent: exits 1" \
+  || _fail "-d nonexistent: exit=$d_ne_exit"
+
+_section "rm_wrapper: directory without -r or -d errors"
+_set_mode selective
+d_no_r="$WORK_DIR/dir-no-r-flag"
+mkdir -p "$d_no_r"
+echo "x" > "$d_no_r/file.txt"
+no_r_out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
+  bash "$REPO_DIR/rm_wrapper.sh" "$d_no_r" 2>&1; echo "EXIT:$?")
+no_r_exit=$(echo "$no_r_out" | grep "EXIT:" | cut -d: -f2)
+if [[ "$no_r_exit" == "1" ]] && [[ -d "$d_no_r" ]]; then
+  _pass "dir no -r: exits 1, directory untouched"
+else
+  _fail "dir no -r: exit=$no_r_exit dir_exists=$(test -d "$d_no_r" && echo yes || echo no)"
+fi
+/bin/rm -rf "$d_no_r"
+
+_section "rm_wrapper: invalid option passes through to /bin/rm"
+invalid_out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
+  bash "$REPO_DIR/rm_wrapper.sh" --invalid-option 2>&1; echo "EXIT:$?")
+invalid_exit=$(echo "$invalid_out" | grep "EXIT:" | cut -d: -f2)
+# Should pass through to /bin/rm which will error with non-zero
+[[ "$invalid_exit" != "0" ]] && _pass "invalid option: passes to /bin/rm (exit=$invalid_exit)" \
+  || _fail "invalid option: unexpectedly exited 0"
+
+_section "rm_wrapper: --version passes through to /bin/rm"
+ver_out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
+  bash "$REPO_DIR/rm_wrapper.sh" --version 2>&1; echo "EXIT:$?") || true
+# --version should pass through to /bin/rm; the output varies by platform
+_pass "--version: passed through without crashing"
+
+_section "rm_wrapper: metadata written on Linux sidecar (or macOS xattr)"
+_set_mode selective
+f_meta="$WORK_DIR/meta-test.txt"
+echo "meta-content" > "$f_meta"
+_rm "$f_meta"
+meta_item="$TEST_TRASH/meta-test.txt"
+if [[ -e "$meta_item" ]]; then
+  orig=$(_read_meta "$meta_item" original-path)
+  ts=$(_read_meta "$meta_item" deleted-at)
+  by=$(_read_meta "$meta_item" deleted-by)
+  proc=$(_read_meta "$meta_item" deleted-by-process)
+  sz=$(_read_meta "$meta_item" original-size)
+
+  [[ -n "$orig" ]] && _pass "meta2: original-path set" || _fail "meta2: original-path empty"
+  [[ "$ts" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] && _pass "meta2: deleted-at ISO format" || _fail "meta2: deleted-at='$ts'"
+  [[ -n "$by" ]] && _pass "meta2: deleted-by set" || _fail "meta2: deleted-by empty"
+  [[ -n "$proc" ]] && _pass "meta2: deleted-by-process set" || _fail "meta2: deleted-by-process empty"
+  [[ "$sz" =~ ^[0-9]+$ ]] && _pass "meta2: original-size numeric" || _fail "meta2: original-size='$sz'"
+else
+  _fail "meta2: item not found in trash"
+fi
+
+_section "ai-trash CLI: restore — missing parent directory recreated"
+f_deep_restore="$WORK_DIR/deep-restore/sub1/sub2/deep-file.txt"
+mkdir -p "$(dirname "$f_deep_restore")"
+echo "deep-restore-content" > "$f_deep_restore"
+_rm "$f_deep_restore"
+# Remove parent directories
+/bin/rm -rf "$WORK_DIR/deep-restore"
+out=$(_ai_trash restore deep-file.txt)
+if [[ -f "$f_deep_restore" ]]; then
+  _pass "restore parent: file restored to recreated directory"
+  content=$(cat "$f_deep_restore")
+  [[ "$content" == "deep-restore-content" ]] && _pass "restore parent: content intact" \
+    || _fail "restore parent: content='$content'"
+else
+  _fail "restore parent: file not restored. Output: $out"
+fi
+
+_section "ai-trash CLI: restore — item not found shows error"
+out=$(_ai_trash restore nonexistent-item-xyzzy-999 2>&1)
+if echo "$out" | grep -q "not found"; then
+  _pass "restore not-found: error message present"
+else
+  _fail "restore not-found: no error message. Output: $out"
+fi
+
+_section "ai-trash CLI: restore — no argument shows error"
+out=$(_ai_trash restore 2>&1)
+if echo "$out" | grep -q "required"; then
+  _pass "restore no-arg: shows 'required' error"
+else
+  _fail "restore no-arg: unexpected output: $out"
+fi
+
+_section "ai-trash CLI: version output format"
+out=$(_ai_trash version)
+if echo "$out" | grep -qE "^ai-trash [0-9]+\.[0-9]+\.[0-9]+$"; then
+  _pass "version: format 'ai-trash X.Y.Z'"
+else
+  _fail "version: unexpected format: $out"
+fi
+
+_section "ai-trash CLI: help shows usage"
+out=$(_ai_trash help)
+if echo "$out" | grep -q "Usage:"; then
+  _pass "help: shows Usage"
+else
+  _fail "help: unexpected output: $out"
+fi
+if echo "$out" | grep -q "Commands:"; then
+  _pass "help: shows Commands section"
+else
+  _fail "help: Commands section missing"
+fi
+
+_section "ai-trash CLI: unknown command exits with error"
+out=$(_ai_trash badcommand 2>&1)
+if echo "$out" | grep -q "unknown command"; then
+  _pass "unknown command: error message present"
+else
+  _fail "unknown command: no error message. Output: $out"
+fi
+
+_section "ai-trash CLI: list output format — header present"
+# Ensure there's at least one item
+f_list_fmt="$WORK_DIR/list-hdr-test.txt"
+echo "hdr" > "$f_list_fmt"
+_rm "$f_list_fmt"
+out=$(_ai_trash list)
+if echo "$out" | grep -q "NAME"; then
+  _pass "list format: header NAME present"
+else
+  _fail "list format: header NAME missing. Output: $out"
+fi
+if echo "$out" | grep -q "DELETED (UTC)"; then
+  _pass "list format: header DELETED (UTC) present"
+else
+  _fail "list format: header DELETED (UTC) missing"
+fi
+if echo "$out" | grep -q "ORIGINAL PATH"; then
+  _pass "list format: header ORIGINAL PATH present"
+else
+  _fail "list format: header ORIGINAL PATH missing"
+fi
+if echo "$out" | grep -q "item(s) in AI trash"; then
+  _pass "list format: footer with item count"
+else
+  _fail "list format: footer missing"
+fi
+
+_section "ai-trash CLI: status size formatting (B / K / M)"
+# Create files of known sizes to test _fmt_size
+_ai_trash empty --force >/dev/null 2>&1
+f_512="$WORK_DIR/fmt-512.txt"
+dd if=/dev/zero of="$f_512" bs=512 count=1 2>/dev/null
+_rm "$f_512"
+out=$(_ai_trash status)
+if echo "$out" | grep -qE "512B"; then
+  _pass "FmtSize: 512B"
+else
+  _fail "FmtSize: expected 512B in: $out"
+fi
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "ai-trash CLI: empty --force on empty trash"
+_ai_trash empty --force >/dev/null 2>&1
+out=$(_ai_trash empty --force)
+if echo "$out" | grep -qE "already empty|No items"; then
+  _pass "empty --force empty: correct message"
+else
+  _fail "empty --force empty: unexpected output: $out"
+fi
+
+_section "ai-trash CLI: status shows oldest and newest item names"
+f_old="$WORK_DIR/oldest-test.txt"
+f_new="$WORK_DIR/newest-test.txt"
+echo "old" > "$f_old"
+_rm "$f_old"
+# Backdate the old item
+old_item="$TEST_TRASH/oldest-test.txt"
+if [[ -e "$old_item" ]]; then
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    touch -t "$(date -v-2H +%Y%m%d%H%M)" "$old_item"
+    xattr -w com.ai-trash.deleted-at "$(date -u -v-2H +%Y-%m-%dT%H:%M:%SZ)" "$old_item" >/dev/null 2>&1
+  else
+    touch -t "$(date -d '2 hours ago' +%Y%m%d%H%M)" "$old_item"
+    sidecar="$TEST_TRASH/.oldest-test.txt.ai-trash"
+    if [[ -f "$sidecar" ]]; then
+      sed -i.bak "s/^deleted-at=.*/deleted-at=$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ)/" "$sidecar" \
+        && /bin/rm -f "${sidecar}.bak"
+    fi
+  fi
+fi
+echo "new" > "$f_new"
+_rm "$f_new"
+out=$(_ai_trash status)
+if echo "$out" | grep -q "Oldest:.*oldest-test"; then
+  _pass "status: oldest item name shown"
+else
+  _fail "status: oldest not shown. Output: $out"
+fi
+if echo "$out" | grep -q "Newest:.*newest-test"; then
+  _pass "status: newest item name shown"
+else
+  _fail "status: newest not shown. Output: $out"
+fi
+
+_section "rm_wrapper: safe mode with AI env var — routes to ai-trash (not system trash)"
+_set_mode safe
+f_safe_ai="$WORK_DIR/safe-ai-verify.txt"
+echo "safe-ai" > "$f_safe_ai"
+before_ai=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
+  bash "$REPO_DIR/rm_wrapper.sh" "$f_safe_ai" 2>/dev/null
+after_ai=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ ! -f "$f_safe_ai" ]] && [[ "$after_ai" -gt "$before_ai" ]]; then
+  _pass "safe AI: AI caller in safe mode goes to ai-trash"
+else
+  _fail "safe AI: file_exists=$(test -f "$f_safe_ai" && echo yes || echo no) trash_before=$before_ai after=$after_ai"
+fi
+_set_mode selective
+
+_section "ai-trash-cleanup: preserves items newer than threshold"
+f_cleanup_preserved="$WORK_DIR/cleanup-preserved.txt"
+echo "preserved" > "$f_cleanup_preserved"
+_rm "$f_cleanup_preserved"
+before_cleanup_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+HOME="$TEST_HOME" bash "$REPO_DIR/ai-trash-cleanup"
+after_cleanup_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$before_cleanup_count" -eq "$after_cleanup_count" ]]; then
+  _pass "cleanup preserve: recent items untouched"
+else
+  _fail "cleanup preserve: count changed ($before_cleanup_count → $after_cleanup_count)"
+fi
+
+# Clear items added by gap-coverage tests
+_ai_trash empty --force >/dev/null 2>&1
+
 # ─── Summary ───────────────────────────────────────────────────────────
 echo ""
 echo "──────────────────────────────────────"

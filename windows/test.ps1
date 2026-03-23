@@ -638,6 +638,441 @@ else { _Fail "status: oldest item not shown. Output: $out" }
 if ($out -match 'Newest:.*newest-item') { _Pass "status: newest item name shown" }
 else { _Fail "status: newest item not shown. Output: $out" }
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Additional gap-coverage tests
+# ──────────────────────────────────────────────────────────────────────────────
+
+_Section "rm_wrapper: -WhatIf passthrough — file not deleted"
+_SetMode 'always'
+$fWhatIf = Join-Path $WorkDir "whatif-test.txt"
+"whatif-content" | Set-Content $fWhatIf
+Remove-Item -LiteralPath $fWhatIf -WhatIf
+if (Test-Path $fWhatIf) { _Pass "WhatIf: file still exists (not deleted)" }
+else { _Fail "WhatIf: file was deleted despite -WhatIf" }
+$whatIfEntry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq ([System.IO.Path]::GetFullPath($fWhatIf)) }
+if (-not $whatIfEntry) { _Pass "WhatIf: no manifest entry created" }
+else { _Fail "WhatIf: manifest entry unexpectedly created" }
+Microsoft.PowerShell.Management\Remove-Item -LiteralPath $fWhatIf -Force -ErrorAction SilentlyContinue
+
+_Section "rm_wrapper: -WhatIf combined with -Force — file not deleted"
+$fWhatIfForce = Join-Path $WorkDir "whatif-force.txt"
+"wif" | Set-Content $fWhatIfForce
+Remove-Item -LiteralPath $fWhatIfForce -WhatIf -Force
+if (Test-Path $fWhatIfForce) { _Pass "WhatIf+Force: file still exists" }
+else { _Fail "WhatIf+Force: file was deleted" }
+Microsoft.PowerShell.Management\Remove-Item -LiteralPath $fWhatIfForce -Force -ErrorAction SilentlyContinue
+
+_Section "rm_wrapper: -Filter passthrough — only matching files deleted"
+$fFilterA = Join-Path $WorkDir "filter-match.log"
+$fFilterB = Join-Path $WorkDir "filter-keep.txt"
+"a" | Set-Content $fFilterA
+"b" | Set-Content $fFilterB
+# -Filter bypasses ai-trash and goes to real cmdlet — permanently deletes
+Remove-Item -Path (Join-Path $WorkDir "filter-*") -Filter "*.log"
+if (-not (Test-Path $fFilterA)) { _Pass "Filter: matching file deleted" }
+else { _Fail "Filter: matching file still exists" }
+if (Test-Path $fFilterB) { _Pass "Filter: non-matching file kept" }
+else { _Fail "Filter: non-matching file was deleted" }
+Microsoft.PowerShell.Management\Remove-Item -LiteralPath $fFilterB -Force -ErrorAction SilentlyContinue
+
+_Section "rm_wrapper: -Include passthrough"
+$fInclA = Join-Path $WorkDir "incl-a.log"
+$fInclB = Join-Path $WorkDir "incl-b.txt"
+"a" | Set-Content $fInclA
+"b" | Set-Content $fInclB
+Remove-Item -Path (Join-Path $WorkDir "incl-*") -Include "*.log"
+if (-not (Test-Path $fInclA)) { _Pass "Include: included file deleted" }
+else { _Fail "Include: included file still exists" }
+if (Test-Path $fInclB) { _Pass "Include: non-included file kept" }
+else { _Fail "Include: non-included file was deleted" }
+Microsoft.PowerShell.Management\Remove-Item -LiteralPath $fInclB -Force -ErrorAction SilentlyContinue
+
+_Section "rm_wrapper: -Exclude passthrough"
+$fExclA = Join-Path $WorkDir "excl-del.log"
+$fExclB = Join-Path $WorkDir "excl-keep.txt"
+"a" | Set-Content $fExclA
+"b" | Set-Content $fExclB
+Remove-Item -Path (Join-Path $WorkDir "excl-*") -Exclude "*.txt"
+if (-not (Test-Path $fExclA)) { _Pass "Exclude: non-excluded file deleted" }
+else { _Fail "Exclude: non-excluded file still exists" }
+if (Test-Path $fExclB) { _Pass "Exclude: excluded file kept" }
+else { _Fail "Exclude: excluded file was deleted" }
+Microsoft.PowerShell.Management\Remove-Item -LiteralPath $fExclB -Force -ErrorAction SilentlyContinue
+
+_Section "rm_wrapper: _AiTrash-IsBinAvailable — UNC path returns false"
+$uncResult = _AiTrash-IsBinAvailable -Path '\\server\share\file.txt'
+if ($uncResult -eq $false) { _Pass "IsBinAvailable: UNC path returns false" }
+else { _Fail "IsBinAvailable: UNC path returned $uncResult (expected false)" }
+
+_Section "rm_wrapper: _AiTrash-IsBinAvailable — local path returns true"
+$localResult = _AiTrash-IsBinAvailable -Path (Join-Path $WorkDir "local-test.txt")
+if ($localResult -eq $true) { _Pass "IsBinAvailable: local path returns true" }
+else { _Fail "IsBinAvailable: local path returned $localResult (expected true)" }
+
+_Section "rm_wrapper: corrupted manifest.json — ReadManifest returns empty array"
+$backupManifest = $null
+if (Test-Path -LiteralPath $ManifestPath) {
+    $backupManifest = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8
+}
+# Write invalid JSON
+Set-Content -LiteralPath $ManifestPath -Value '{ this is not valid json !!!' -Encoding UTF8
+$corruptResult = @(_AiTrash-ReadManifest)
+if ($corruptResult.Count -eq 0) { _Pass "corrupt manifest: ReadManifest returns empty array" }
+else { _Fail "corrupt manifest: ReadManifest returned $($corruptResult.Count) entries" }
+# Restore manifest
+if ($null -ne $backupManifest) { Set-Content -LiteralPath $ManifestPath -Value $backupManifest -Encoding UTF8 }
+else { Microsoft.PowerShell.Management\Remove-Item -LiteralPath $ManifestPath -Force -ErrorAction SilentlyContinue }
+
+_Section "rm_wrapper: empty manifest.json — ReadManifest returns empty array"
+if (Test-Path -LiteralPath $ManifestPath) {
+    $backupManifest = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8
+} else { $backupManifest = $null }
+Set-Content -LiteralPath $ManifestPath -Value '' -Encoding UTF8
+$emptyResult = @(_AiTrash-ReadManifest)
+if ($emptyResult.Count -eq 0) { _Pass "empty manifest: ReadManifest returns empty array" }
+else { _Fail "empty manifest: ReadManifest returned $($emptyResult.Count) entries" }
+if ($null -ne $backupManifest) { Set-Content -LiteralPath $ManifestPath -Value $backupManifest -Encoding UTF8 }
+else { Microsoft.PowerShell.Management\Remove-Item -LiteralPath $ManifestPath -Force -ErrorAction SilentlyContinue }
+
+_Section "rm_wrapper: manifest with null deleted-at — ReadManifest handles gracefully"
+if (Test-Path -LiteralPath $ManifestPath) {
+    $backupManifest = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8
+} else { $backupManifest = $null }
+Set-Content -LiteralPath $ManifestPath -Value '[{"original-path":"C:\\test.txt","deleted-at":null,"deleted-by":"user","deleted-by-process":"test","original-size":"0"}]' -Encoding UTF8
+$nullFieldResult = @(_AiTrash-ReadManifest)
+if ($nullFieldResult.Count -eq 1) { _Pass "null field: ReadManifest returns 1 entry" }
+else { _Fail "null field: ReadManifest returned $($nullFieldResult.Count) entries (expected 1)" }
+if ($null -ne $backupManifest) { Set-Content -LiteralPath $ManifestPath -Value $backupManifest -Encoding UTF8 }
+else { Microsoft.PowerShell.Management\Remove-Item -LiteralPath $ManifestPath -Force -ErrorAction SilentlyContinue }
+
+_Section "rm_wrapper: manifest round-trip — WriteManifest then ReadManifest preserves data"
+if (Test-Path -LiteralPath $ManifestPath) {
+    $backupManifest = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8
+} else { $backupManifest = $null }
+$rtEntries = @(
+    [ordered]@{ 'original-path' = 'C:\test\a.txt'; 'deleted-at' = '2025-01-15T10:30:00Z'; 'deleted-by' = 'user'; 'deleted-by-process' = 'claude'; 'original-size' = '1024' },
+    [ordered]@{ 'original-path' = 'C:\test\b.txt'; 'deleted-at' = '2025-01-16T11:00:00Z'; 'deleted-by' = 'user'; 'deleted-by-process' = 'cursor'; 'original-size' = '2048' }
+)
+_AiTrash-WriteManifest -Entries $rtEntries
+$rtRead = @(_AiTrash-ReadManifest)
+if ($rtRead.Count -eq 2) { _Pass "round-trip: 2 entries preserved" }
+else { _Fail "round-trip: expected 2 entries, got $($rtRead.Count)" }
+if ($rtRead[0].'original-path' -eq 'C:\test\a.txt') { _Pass "round-trip: original-path preserved" }
+else { _Fail "round-trip: original-path='$($rtRead[0].'original-path')'" }
+if ($null -ne $backupManifest) { Set-Content -LiteralPath $ManifestPath -Value $backupManifest -Encoding UTF8 }
+else { Microsoft.PowerShell.Management\Remove-Item -LiteralPath $ManifestPath -Force -ErrorAction SilentlyContinue }
+
+_Section "rm_wrapper: WriteManifest with empty array writes []"
+if (Test-Path -LiteralPath $ManifestPath) {
+    $backupManifest = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8
+} else { $backupManifest = $null }
+_AiTrash-WriteManifest -Entries @()
+$emptyJson = (Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8).Trim()
+if ($emptyJson -eq '[]') { _Pass "WriteManifest empty: writes []" }
+else { _Fail "WriteManifest empty: wrote '$emptyJson' (expected '[]')" }
+if ($null -ne $backupManifest) { Set-Content -LiteralPath $ManifestPath -Value $backupManifest -Encoding UTF8 }
+else { Microsoft.PowerShell.Management\Remove-Item -LiteralPath $ManifestPath -Force -ErrorAction SilentlyContinue }
+
+_Section "rm_wrapper: USERPROFILE empty — falls through to real cmdlet"
+# Temporarily unset USERPROFILE to test the guard
+$savedProfile = $env:USERPROFILE
+$env:USERPROFILE = ''
+$fGuard = Join-Path $WorkDir "guard-test.txt"
+"guard" | Set-Content -LiteralPath $fGuard
+try {
+    Remove-Item -LiteralPath $fGuard
+    if (-not (Test-Path $fGuard)) { _Pass "USERPROFILE guard: file deleted via real cmdlet" }
+    else { _Fail "USERPROFILE guard: file still exists" }
+} catch {
+    _Fail "USERPROFILE guard: threw: $_"
+}
+$env:USERPROFILE = $savedProfile
+
+_Section "rm_wrapper: multiple files — first missing without -Force, second still processed"
+$fExist = Join-Path $WorkDir "exists-file.txt"
+"exists" | Set-Content $fExist
+$absFExist = [System.IO.Path]::GetFullPath($fExist)
+$fMissing = Join-Path $WorkDir "missing-file-12345.txt"
+# Remove both — missing file should error, but existing file should still be processed
+$errOut = $null
+try {
+    Remove-Item -LiteralPath $fMissing, $fExist -ErrorAction SilentlyContinue
+} catch { $errOut = $_ }
+if (-not (Test-Path $fExist)) { _Pass "cascade: existing file still processed after missing file" }
+else { _Fail "cascade: existing file not processed" }
+$cascadeEntry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absFExist }
+if ($cascadeEntry) { _Pass "cascade: manifest entry created for existing file" }
+else { _Fail "cascade: no manifest entry for existing file" }
+
+_Section "rm_wrapper: -Recurse on directory with nested contents"
+$dRecurse = Join-Path $WorkDir "recurse-dir"
+New-Item -ItemType Directory (Join-Path $dRecurse "sub1\sub2") -Force | Out-Null
+"a" | Set-Content (Join-Path $dRecurse "root.txt")
+"b" | Set-Content (Join-Path $dRecurse "sub1\mid.txt")
+"c" | Set-Content (Join-Path $dRecurse "sub1\sub2\deep.txt")
+$absDRecurse = [System.IO.Path]::GetFullPath($dRecurse)
+Remove-Item -LiteralPath $dRecurse -Recurse
+if (-not (Test-Path $dRecurse)) { _Pass "Recurse: directory deleted" }
+else { _Fail "Recurse: directory still exists" }
+$recurseEntry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absDRecurse }
+if ($recurseEntry) { _Pass "Recurse: manifest entry created" }
+else { _Fail "Recurse: no manifest entry" }
+
+_Section "rm_wrapper: file with unicode characters in name"
+$fUnicode = Join-Path $WorkDir "café-résumé.txt"
+$absUnicode = [System.IO.Path]::GetFullPath($fUnicode)
+"unicode" | Set-Content -LiteralPath $fUnicode
+Remove-Item -LiteralPath $fUnicode
+if (-not (Test-Path -LiteralPath $fUnicode)) { _Pass "unicode: file deleted" }
+else { _Fail "unicode: file still exists" }
+$unicodeEntry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absUnicode }
+if ($unicodeEntry) { _Pass "unicode: manifest entry created" }
+else { _Fail "unicode: no manifest entry" }
+
+_Section "rm_wrapper: hidden file deletion"
+$fHidden = Join-Path $WorkDir ".hidden-config"
+$absHidden = [System.IO.Path]::GetFullPath($fHidden)
+"hidden" | Set-Content -LiteralPath $fHidden
+(Get-Item -LiteralPath $fHidden -Force).Attributes = 'Hidden'
+Remove-Item -LiteralPath $fHidden -Force
+if (-not (Test-Path -LiteralPath $fHidden)) { _Pass "hidden: hidden file deleted" }
+else { _Fail "hidden: hidden file still exists" }
+$hiddenEntry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absHidden }
+if ($hiddenEntry) { _Pass "hidden: manifest entry created" }
+else { _Fail "hidden: no manifest entry" }
+
+_Section "rm_wrapper: read-only file with -Force"
+$fReadOnly = Join-Path $WorkDir "readonly-test.txt"
+$absReadOnly = [System.IO.Path]::GetFullPath($fReadOnly)
+"readonly" | Set-Content -LiteralPath $fReadOnly
+(Get-Item -LiteralPath $fReadOnly).IsReadOnly = $true
+Remove-Item -LiteralPath $fReadOnly -Force
+if (-not (Test-Path -LiteralPath $fReadOnly)) { _Pass "readonly: file deleted with -Force" }
+else { _Fail "readonly: file still exists" }
+$roEntry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absReadOnly }
+if ($roEntry) { _Pass "readonly: manifest entry created" }
+else { _Fail "readonly: no manifest entry" }
+
+_Section "ai-trash CLI: status with entry missing original-size"
+$statusBase2 = @(_ReadTestManifest)
+_AiTrash-WriteManifest -Entries @([ordered]@{
+    'original-path'      = (Join-Path $WorkDir 'no-size.txt')
+    'deleted-at'         = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    'deleted-by'         = $env:USERNAME
+    'deleted-by-process' = 'test'
+    'original-size'      = ''
+})
+$out = (_AiTrash @('status')) -join "`n"
+_AiTrash-WriteManifest -Entries $statusBase2
+if ($out -match 'Items:\s*1') { _Pass "status no-size: item counted" }
+else { _Fail "status no-size: unexpected output: $out" }
+# Size line should be absent when all sizes are empty
+if ($out -notmatch 'Size:') { _Pass "status no-size: Size line omitted" }
+else { _Fail "status no-size: Size line unexpectedly shown: $out" }
+
+_Section "ai-trash CLI: status with entry having unparseable deleted-at"
+$statusBase3 = @(_ReadTestManifest)
+_AiTrash-WriteManifest -Entries @([ordered]@{
+    'original-path'      = (Join-Path $WorkDir 'bad-date-status.txt')
+    'deleted-at'         = 'not-a-date'
+    'deleted-by'         = $env:USERNAME
+    'deleted-by-process' = 'test'
+    'original-size'      = '100'
+})
+$out = (_AiTrash @('status')) -join "`n"
+_AiTrash-WriteManifest -Entries $statusBase3
+if ($out -match 'Items:\s*1') { _Pass "status bad-date: item counted" }
+else { _Fail "status bad-date: unexpected output: $out" }
+# Oldest/Newest should be absent when date is unparseable
+if ($out -notmatch 'Oldest:') { _Pass "status bad-date: Oldest line omitted" }
+else { _Fail "status bad-date: Oldest line unexpectedly shown" }
+
+_Section "ai-trash CLI: list output format — header present"
+# Put a real file in trash so list has something to show
+$fListFmt = Join-Path $WorkDir "list-fmt.txt"
+"fmt" | Set-Content $fListFmt
+Remove-Item -LiteralPath $fListFmt
+$out = (_AiTrash @('list')) -join "`n"
+if ($out -match 'NAME') { _Pass "list format: header NAME present" }
+else { _Fail "list format: header NAME missing" }
+if ($out -match 'DELETED \(UTC\)') { _Pass "list format: header DELETED (UTC) present" }
+else { _Fail "list format: header DELETED (UTC) missing" }
+if ($out -match 'ORIGINAL PATH') { _Pass "list format: header ORIGINAL PATH present" }
+else { _Fail "list format: header ORIGINAL PATH missing" }
+if ($out -match 'item\(s\) in AI trash') { _Pass "list format: footer with item count" }
+else { _Fail "list format: footer missing. Output: $out" }
+
+_Section "ai-trash CLI: help command shows usage"
+$out = (_AiTrash @('help')) -join "`n"
+if ($out -match 'Usage:') { _Pass "help: shows usage" }
+else { _Fail "help: unexpected output: $out" }
+if ($out -match 'Commands:') { _Pass "help: shows commands" }
+else { _Fail "help: Commands section missing" }
+
+_Section "ai-trash CLI: empty with no items shows message"
+# First clear everything
+_AiTrash @('empty', '--force') | Out-Null
+$out = (_AiTrash @('empty', '--force')) -join "`n"
+if ($out -match 'No items to delete') { _Pass "empty no-items: correct message" }
+else { _Fail "empty no-items: unexpected output: $out" }
+
+_Section "ai-trash CLI: empty --older-than with value — old items deleted, recent kept"
+# Add one old entry and one recent entry
+$nowStr2 = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+$old10Str = (Get-Date).AddDays(-10).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+# Create real files and delete them so they're in the bin
+$fOlderDel = Join-Path $WorkDir "older-del.txt"
+$fRecentKeep = Join-Path $WorkDir "recent-keep.txt"
+"old" | Set-Content $fOlderDel
+"new" | Set-Content $fRecentKeep
+Remove-Item -LiteralPath $fOlderDel
+Remove-Item -LiteralPath $fRecentKeep
+# Backdate the first entry
+$olderEntries = @(_ReadTestManifest)
+foreach ($e in $olderEntries) {
+    if ((Split-Path $e.'original-path' -Leaf) -eq 'older-del.txt') {
+        $e.'deleted-at' = $old10Str
+    }
+}
+_AiTrash-WriteManifest -Entries $olderEntries
+$beforeOlder = @(_ReadTestManifest).Count
+# Empty items older than 5 days
+_AiTrash @('empty', '--force', '--older-than', '5') | Out-Null
+$afterOlder = @(_ReadTestManifest)
+$oldGone = -not ($afterOlder | Where-Object { (Split-Path $_.'original-path' -Leaf) -eq 'older-del.txt' })
+$newKept = $afterOlder | Where-Object { (Split-Path $_.'original-path' -Leaf) -eq 'recent-keep.txt' }
+if ($oldGone) { _Pass "empty --older-than 5: old entry removed" }
+else { _Fail "empty --older-than 5: old entry still present" }
+if ($newKept) { _Pass "empty --older-than 5: recent entry kept" }
+else { _Fail "empty --older-than 5: recent entry was removed" }
+
+_Section "ai-trash-cleanup.ps1: recent entry preserved (not purged)"
+$fCleanupNew = Join-Path $WorkDir "cleanup-recent.txt"
+"recent" | Set-Content $fCleanupNew
+$absCleanupNew = [System.IO.Path]::GetFullPath($fCleanupNew)
+Remove-Item -LiteralPath $fCleanupNew
+$preNewEntry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absCleanupNew }
+if ($preNewEntry) { _Pass "cleanup recent: entry present before cleanup" }
+else { _Fail "cleanup recent: entry not found before cleanup" }
+& pwsh -NoProfile -NonInteractive -File "$RepoDir\windows\ai-trash-cleanup.ps1" -DaysOld 30 2>&1 | Out-Null
+$postNewEntry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absCleanupNew }
+if ($postNewEntry) { _Pass "cleanup recent: recent entry preserved after cleanup" }
+else { _Fail "cleanup recent: recent entry was incorrectly purged" }
+
+_Section "rm_wrapper: _AiTrash-ConfirmInRecycleBin — returns true for recently trashed file"
+$fConfirmBin = Join-Path $WorkDir "confirm-bin.txt"
+$absConfirmBin = [System.IO.Path]::GetFullPath($fConfirmBin)
+"confirm" | Set-Content $fConfirmBin
+Remove-Item -LiteralPath $fConfirmBin
+$confirmResult = _AiTrash-ConfirmInRecycleBin -OriginalPath $absConfirmBin
+if ($confirmResult -eq $true) { _Pass "ConfirmInRecycleBin: returns true for trashed file" }
+else { _Fail "ConfirmInRecycleBin: returned $confirmResult (expected true)" }
+
+_Section "rm_wrapper: _AiTrash-ConfirmInRecycleBin — returns false for non-existent file"
+$absNeverTrashed = [System.IO.Path]::GetFullPath((Join-Path $WorkDir "never-trashed-xyzzy.txt"))
+$confirmFalse = _AiTrash-ConfirmInRecycleBin -OriginalPath $absNeverTrashed
+if ($confirmFalse -eq $false) { _Pass "ConfirmInRecycleBin: returns false for non-trashed file" }
+else { _Fail "ConfirmInRecycleBin: returned $confirmFalse (expected false)" }
+
+_Section "rm_wrapper: _AiTrash-IsAiProcess — detects TERM_PROGRAM=cursor"
+$savedTP = $env:TERM_PROGRAM
+$env:TERM_PROGRAM = 'cursor'
+$isAiCursor = _AiTrash-IsAiProcess
+$env:TERM_PROGRAM = $savedTP
+if ($isAiCursor -eq $true) { _Pass "IsAiProcess: detects TERM_PROGRAM=cursor" }
+else { _Fail "IsAiProcess: did not detect cursor" }
+
+_Section "rm_wrapper: _AiTrash-IsAiProcess — detects TERM_PROGRAM=vscode"
+$savedTP2 = $env:TERM_PROGRAM
+$env:TERM_PROGRAM = 'vscode'
+$isAiVscode = _AiTrash-IsAiProcess
+$env:TERM_PROGRAM = $savedTP2
+if ($isAiVscode -eq $true) { _Pass "IsAiProcess: detects TERM_PROGRAM=vscode" }
+else { _Fail "IsAiProcess: did not detect vscode" }
+
+_Section "rm_wrapper: _AiTrash-IsAiProcess — detects TERM_PROGRAM=windsurf"
+$savedTP3 = $env:TERM_PROGRAM
+$env:TERM_PROGRAM = 'windsurf'
+$isAiWindsurf = _AiTrash-IsAiProcess
+$env:TERM_PROGRAM = $savedTP3
+if ($isAiWindsurf -eq $true) { _Pass "IsAiProcess: detects TERM_PROGRAM=windsurf" }
+else { _Fail "IsAiProcess: did not detect windsurf" }
+
+_Section "rm_wrapper: _AiTrash-IsAiProcess — no AI env var, checks process tree"
+# With no AI env vars set, it should still work (may or may not detect AI depending on parent)
+$savedTP4 = $env:TERM_PROGRAM
+$env:TERM_PROGRAM = $null
+$isAiNoEnv = _AiTrash-IsAiProcess
+$env:TERM_PROGRAM = $savedTP4
+# This test just verifies it doesn't throw — result depends on actual process tree
+if ($null -ne $isAiNoEnv) { _Pass "IsAiProcess no-env: returned $isAiNoEnv without error" }
+else { _Fail "IsAiProcess no-env: returned null" }
+
+_Section "rm_wrapper: selective mode with AI env var — routes to ai-trash"
+$savedTP5 = $env:TERM_PROGRAM
+$env:TERM_PROGRAM = 'cursor'
+_SetMode 'selective'
+$fSelAi = Join-Path $WorkDir "selective-ai.txt"
+$absSelAi = [System.IO.Path]::GetFullPath($fSelAi)
+"selective-ai" | Set-Content $fSelAi
+Remove-Item -LiteralPath $fSelAi
+$env:TERM_PROGRAM = $savedTP5
+_SetMode 'always'
+$selAiEntry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absSelAi }
+if ($selAiEntry) { _Pass "selective AI: manifest entry created" }
+else { _Fail "selective AI: no manifest entry" }
+$selAiBin = _FindInBin -OriginalPath $absSelAi
+if ($selAiBin) { _Pass "selective AI: file in Recycle Bin" }
+else { _Fail "selective AI: file not in Recycle Bin" }
+
+_Section "rm_wrapper: original-size captured for file"
+$fSize = Join-Path $WorkDir "size-test.txt"
+$absSize = [System.IO.Path]::GetFullPath($fSize)
+"exactly twenty chars" | Set-Content -LiteralPath $fSize -NoNewline
+$expectedSize = (Get-Item -LiteralPath $fSize).Length.ToString()
+Remove-Item -LiteralPath $fSize
+$sizeEntry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absSize }
+if ($sizeEntry -and $sizeEntry.'original-size' -eq $expectedSize) {
+    _Pass "original-size: captured correctly ($expectedSize)"
+} else {
+    _Fail "original-size: expected '$expectedSize', got '$($sizeEntry.'original-size')'"
+}
+
+_Section "rm_wrapper: original-size empty for directory"
+$dSize = Join-Path $WorkDir "sizedir"
+New-Item -ItemType Directory $dSize -Force | Out-Null
+"x" | Set-Content "$dSize\file.txt"
+$absDSize = [System.IO.Path]::GetFullPath($dSize)
+Remove-Item -LiteralPath $dSize -Recurse
+$dirSizeEntry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absDSize }
+if ($dirSizeEntry -and [string]::IsNullOrEmpty($dirSizeEntry.'original-size')) {
+    _Pass "dir size: original-size empty for directory"
+} else {
+    _Fail "dir size: original-size='$($dirSizeEntry.'original-size')' (expected empty)"
+}
+
+_Section "ai-trash CLI: restore — item not found prints error"
+$out = (_AiTrash @('restore', 'absolutely-nonexistent-xyzzy-999.txt')) -join "`n"
+if ($LASTEXITCODE -ne 0) { _Pass "restore not-found: exits non-zero" }
+else { _Fail "restore not-found: unexpectedly exited 0" }
+if ($out -match 'not found') { _Pass "restore not-found: error message present" }
+else { _Fail "restore not-found: no error message. Output: $out" }
+
+_Section "ai-trash CLI: version format"
+$out = (_AiTrash @('version')) -join "`n"
+if ($out -match '^ai-trash \d+\.\d+\.\d+') { _Pass "version format: 'ai-trash X.Y.Z'" }
+else { _Fail "version format: unexpected: $out" }
+
+_Section "ai-trash CLI: empty --older-than without value shows error"
+$out = (_AiTrash @('empty', '--older-than')) -join "`n"
+if ($LASTEXITCODE -ne 0) { _Pass "empty --older-than no-value: exits non-zero" }
+else { _Fail "empty --older-than no-value: unexpectedly exited 0" }
+
+_Section "ai-trash CLI: empty --unknown-flag shows error"
+$out = (_AiTrash @('empty', '--bogus')) -join "`n"
+if ($LASTEXITCODE -ne 0) { _Pass "empty --bogus: exits non-zero" }
+else { _Fail "empty --bogus: unexpectedly exited 0" }
+
 # ─── Cleanup ──────────────────────────────────────────────────────────────────
 # Empty any remaining Recycle Bin entries from our tests before removing WorkDir.
 _AiTrash @('empty', '--force') | Out-Null
