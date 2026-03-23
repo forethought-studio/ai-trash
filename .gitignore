@@ -8,6 +8,9 @@ demo.tape
 # Playwright MCP browser session artifacts (console logs, screenshots)
 .playwright-mcp/
 
+# VM testing screenshots
+vm_screen*.png
+
 # Queue runtime state
 .queue/queue.lock
 .backlog/taskwarrior/taskchampion.sqlite3
