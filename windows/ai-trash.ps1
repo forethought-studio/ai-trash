@@ -83,17 +83,31 @@ function _WriteManifest {
 # ─── Recycle Bin helpers ───────────────────────────────────────────────────────
 
 function _FindInRecycleBin {
-    param([string]$OriginalPath)
+    param([string]$OriginalPath, [string]$DeletedAt = '')
     # Try COM Shell.Application first (works in interactive sessions).
+    # When DeletedAt is provided, pick the bin item whose deletion time is closest to it
+    # so we operate on the correct copy when the same path was deleted multiple times.
     try {
-        $shell = New-Object -ComObject Shell.Application
-        $bin   = $shell.Namespace(10)
+        $shell    = New-Object -ComObject Shell.Application
+        $bin      = $shell.Namespace(10)
+        $best     = $null
+        $bestDelta = [double]::MaxValue
         foreach ($item in $bin.Items()) {
             $from = $item.ExtendedProperty('System.Recycle.DeletedFrom')
             if ([string]::IsNullOrEmpty($from)) { continue }
             $full = Join-Path $from $item.Name
-            if ($full -ieq $OriginalPath) { return $item }
+            if ($full -ieq $OriginalPath) {
+                if (-not $DeletedAt) { return $item }
+                try {
+                    $d = $item.ExtendedProperty('System.Recycle.DeletedDate')
+                    if ($null -ne $d) {
+                        $delta = [Math]::Abs(([DateTime]::Parse($DeletedAt) - $d.ToUniversalTime()).TotalSeconds)
+                        if ($delta -lt $bestDelta) { $best = $item; $bestDelta = $delta }
+                    } elseif ($null -eq $best) { $best = $item }
+                } catch { if ($null -eq $best) { $best = $item } }
+            }
         }
+        if ($null -ne $best) { return $best }
     } catch { }
 
     # Fallback: scan $RECYCLE.BIN\<SID> directly (headless/server environments).
@@ -103,6 +117,8 @@ function _FindInRecycleBin {
         $root   = [System.IO.Path]::GetPathRoot($OriginalPath)
         $binDir = Join-Path $root "`$RECYCLE.BIN\$sid"
         if (Test-Path -LiteralPath $binDir) {
+            $best      = $null
+            $bestDelta = [double]::MaxValue
             $iFiles = Get-ChildItem -LiteralPath $binDir -Filter '$I*' -Force -ErrorAction SilentlyContinue
             foreach ($iFile in $iFiles) {
                 try {
@@ -115,10 +131,17 @@ function _FindInRecycleBin {
                     if ($path -ieq $OriginalPath) {
                         $rLeaf = '$R' + $iFile.Name.Substring(2)
                         $rPath = Join-Path $binDir $rLeaf
-                        return [PSCustomObject]@{ Path = $rPath }
+                        if (-not $DeletedAt) { return [PSCustomObject]@{ Path = $rPath } }
+                        try {
+                            $filetime = [System.BitConverter]::ToInt64($bytes, 16)
+                            $dt    = [DateTime]::FromFileTimeUtc($filetime)
+                            $delta = [Math]::Abs(([DateTime]::Parse($DeletedAt) - $dt).TotalSeconds)
+                            if ($delta -lt $bestDelta) { $best = [PSCustomObject]@{ Path = $rPath }; $bestDelta = $delta }
+                        } catch { if ($null -eq $best) { $best = [PSCustomObject]@{ Path = $rPath } } }
                     }
                 } catch { }
             }
+            if ($null -ne $best) { return $best }
         }
     } catch { }
 
@@ -346,7 +369,7 @@ function Cmd-Restore {
     if ($matches_.Count -gt 0) {
         $entry    = $matches_[0]
         $origPath = $entry.'original-path'
-        $binItem  = _FindInRecycleBin -OriginalPath $origPath
+        $binItem  = _FindInRecycleBin -OriginalPath $origPath -DeletedAt $entry.'deleted-at'
 
         if ($null -ne $binItem) {
             if (Test-Path -LiteralPath $origPath) {
@@ -511,7 +534,7 @@ function Cmd-Empty {
 
     # Delete manifest (Recycle Bin) entries.
     foreach ($entry in $toDelete) {
-        $binItem = _FindInRecycleBin -OriginalPath $entry.'original-path'
+        $binItem = _FindInRecycleBin -OriginalPath $entry.'original-path' -DeletedAt $entry.'deleted-at'
         if ($null -ne $binItem) {
             try {
                 $rFile = $binItem.Path
