@@ -47,6 +47,8 @@ AI_ENV_VARS=(
   "TERM_PROGRAM=WarpTerminal" # Warp terminal — covers the built-in Oz agent
                               #   and any CLI agent run inside Warp
   "OPENCLAW_SHELL=exec"       # OpenClaw — set by its exec tool when running shell commands
+  "CLAUDECODE=1"              # Claude Code — set in every shell session it spawns
+  "CODEX_SANDBOX=seatbelt"    # OpenAI Codex CLI — set in every sandboxed subprocess on macOS
 )
 
 

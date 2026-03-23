@@ -26,6 +26,8 @@ AI_ENV_VARS=(
   "TERM_PROGRAM=windsurf"     # Windsurf (formerly Codeium)
   "TERM_PROGRAM=WarpTerminal" # Warp terminal (built-in Oz agent)
   "OPENCLAW_SHELL=exec"       # OpenClaw exec tool
+  "CLAUDECODE=1"              # Claude Code shell session (set in every spawned shell)
+  "CODEX_SANDBOX=seatbelt"    # OpenAI Codex CLI (set in every sandboxed subprocess on macOS)
 )
 
 AI_PROCESSES=(
@@ -116,8 +118,13 @@ _detect_ai_process_command() {
     var="${env_check%%=*}"
     val="${env_check#*=}"
     if [[ "${!var:-}" == "$val" ]]; then
-      # Return the env var match as the identifier (e.g. "cursor" from TERM_PROGRAM=cursor)
-      printf '%s' "$val"
+      # Return a useful label: the value if descriptive (e.g. "cursor"),
+      # or the variable name if the value is just a boolean flag (e.g. "CLAUDECODE")
+      if [[ "$val" =~ ^(1|true|yes)$ ]]; then
+        printf '%s' "$var"
+      else
+        printf '%s' "$val"
+      fi
       return
     fi
   done
@@ -158,12 +165,58 @@ _detect_ai_process_command() {
     pid="$ppid"
   done
 
-  # No AI process found — fall back to immediate parent shell + "(human)" label.
-  # Strip leading dash from login-shell names (e.g. -zsh → zsh) so xattr -w
-  # doesn't misinterpret the value as option flags.
-  local shell_name
-  shell_name=$(ps -p $PPID -o comm= 2>/dev/null | sed 's/^ *-\{0,1\}//')
-  [[ -n "$shell_name" ]] && printf '%s (human)' "$shell_name"
+  # No AI process found — report the parent's full command line for forensics.
+  # This could be a human, a build script, a voice pipeline, etc. — we don't know,
+  # so we label it "unknown" rather than assuming human.
+  local parent_cmd
+  parent_cmd=$(ps -p $PPID -o command= 2>/dev/null | sed 's/^ *//; s/^-//')
+  if [[ -n "$parent_cmd" ]]; then
+    printf '%s (unknown)' "$parent_cmd"
+  else
+    printf 'unknown'
+  fi
+}
+
+# ─── Build the full process ancestor chain for forensics ─────────────
+# Returns full command lines: "bash /Users/user/bin/q list > zsh > claude > ..."
+_build_process_chain() {
+  local ps_tree chain="" pid=$$
+  ps_tree=$(ps -A -o pid=,ppid=,comm= 2>/dev/null) || return
+
+  while true; do
+    local line ppid comm
+    line=$(echo "$ps_tree" | awk -v p="$pid" '$1+0==p+0{print; exit}')
+    [[ -z "$line" ]] && break
+
+    ppid=$(echo "$line" | awk '{print $2+0}')
+    # Get the process label: for interpreters (bash, python3, node, etc.) include
+    # the script argument so "bash" becomes "bash /Users/user/bin/q list".
+    # For everything else, just the basename is enough.
+    local base_comm full_args
+    base_comm=$(echo "$line" | awk '{print $3}' | sed 's|.*/||; s/^-//')
+    case "$base_comm" in
+      bash|sh|zsh|dash|fish|python|python3|node|ruby|perl)
+        full_args=$(ps -p "$pid" -o args= 2>/dev/null | sed 's/^ *//; s/^-//' || true)
+        # Use full args only if short enough and adds info beyond the interpreter name
+        if [[ -n "$full_args" && ${#full_args} -le 120 && "$full_args" != "$base_comm" ]]; then
+          comm="$full_args"
+        else
+          comm="$base_comm"
+        fi
+        ;;
+      *)
+        comm="$base_comm"
+        ;;
+    esac
+
+    [[ -n "$chain" ]] && chain="$chain > "
+    chain="$chain$comm"
+
+    [[ "$ppid" -le 1 || "$ppid" == "$pid" ]] && break
+    pid="$ppid"
+  done
+
+  printf '%s' "$chain"
 }
 
 # ─── Platform helpers ──────────────────────────────────────────────────
@@ -173,16 +226,17 @@ _stat_size() { [[ "$PLATFORM" == "Darwin" ]] && stat -f %z "$1" 2>/dev/null || s
 # Write metadata to a trashed file.
 # macOS: extended attributes. Linux: sidecar file (no xattr dependency).
 _write_meta() {
-  local file="$1" orig_path="$2" deleted_at="$3" deleted_by="$4" deleted_proc="$5" orig_size="$6"
+  local file="$1" orig_path="$2" deleted_at="$3" deleted_by="$4" deleted_proc="$5" orig_size="$6" proc_chain="$7"
   if [[ "$PLATFORM" == "Darwin" ]]; then
     xattr -w com.ai-trash.original-path     "$orig_path"   "$file" >/dev/null 2>&1
     xattr -w com.ai-trash.deleted-at        "$deleted_at"  "$file" >/dev/null 2>&1
     xattr -w com.ai-trash.deleted-by        "$deleted_by"  "$file" >/dev/null 2>&1
     xattr -w com.ai-trash.deleted-by-process "$deleted_proc" "$file" >/dev/null 2>&1
     [[ -n "$orig_size" ]] && xattr -w com.ai-trash.original-size "$orig_size" "$file" >/dev/null 2>&1
+    [[ -n "$proc_chain" ]] && xattr -w com.ai-trash.process-chain "$proc_chain" "$file" >/dev/null 2>&1
   else
-    printf 'original-path=%s\ndeleted-at=%s\ndeleted-by=%s\ndeleted-by-process=%s\noriginal-size=%s\n' \
-      "$orig_path" "$deleted_at" "$deleted_by" "$deleted_proc" "$orig_size" \
+    printf 'original-path=%s\ndeleted-at=%s\ndeleted-by=%s\ndeleted-by-process=%s\noriginal-size=%s\nprocess-chain=%s\n' \
+      "$orig_path" "$deleted_at" "$deleted_by" "$deleted_proc" "$orig_size" "$proc_chain" \
       > "$(dirname "$file")/.$(basename "$file").ai-trash" 2>/dev/null || true
   fi
 }
@@ -305,10 +359,11 @@ move_to_system_trash() {
   local home_dev=""
   [[ "$PLATFORM" == "Darwin" ]] && home_dev=$(_stat_dev "$HOME")
 
-  local deleted_at deleted_by deleted_proc
+  local deleted_at deleted_by deleted_proc proc_chain
   deleted_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   deleted_by=$(id -un)
   deleted_proc=$(_detect_ai_process_command)
+  proc_chain=$(_build_process_chain)
 
   for f in "$@"; do
     if [[ ! -e "$f" && ! -L "$f" ]]; then
@@ -325,7 +380,7 @@ move_to_system_trash() {
       local rp
       rp=$(_fsmove_single "$abs")
       if [[ -n "$rp" ]]; then
-        _write_meta "$rp" "$abs" "$deleted_at" "$deleted_by" "$deleted_proc" "$sz"
+        _write_meta "$rp" "$abs" "$deleted_at" "$deleted_by" "$deleted_proc" "$sz" "$proc_chain"
         touch "$rp" 2>/dev/null
         continue
       fi
@@ -344,7 +399,7 @@ move_to_system_trash() {
 
     dest=$(get_unique_trash_path "$trash_dir" "$(basename "$f")")
     if mv "$f" "$dest"; then
-      _write_meta "$dest" "$abs" "$deleted_at" "$deleted_by" "$deleted_proc" "$sz"
+      _write_meta "$dest" "$abs" "$deleted_at" "$deleted_by" "$deleted_proc" "$sz" "$proc_chain"
       touch "$dest" 2>/dev/null
     else
       echo "${REAL_CMD:-rm}: $f: could not move to trash" >&2
@@ -359,7 +414,7 @@ move_to_system_trash() {
 # Fallback for when NSFileManager is unavailable or for non-boot volumes.
 # Assumes the file exists (caller's responsibility).
 _mv_file_to_ai_trash_dir() {
-  local f="$1" abs_path="$2" deleted_at="$3" deleted_by="$4" deleted_proc="$5" orig_size="$6"
+  local f="$1" abs_path="$2" deleted_at="$3" deleted_by="$4" deleted_proc="$5" orig_size="$6" proc_chain="$7"
   local trash_dir dest
   trash_dir=$(get_trash_dir "$f")
   if ! mkdir -p "$trash_dir" 2>/dev/null; then
@@ -369,7 +424,7 @@ _mv_file_to_ai_trash_dir() {
   fi
   dest=$(get_unique_trash_path "$trash_dir" "$(basename "$f")")
   if mv "$f" "$dest"; then
-    _write_meta "$dest" "$abs_path" "$deleted_at" "$deleted_by" "$deleted_proc" "$orig_size"
+    _write_meta "$dest" "$abs_path" "$deleted_at" "$deleted_by" "$deleted_proc" "$orig_size" "$proc_chain"
     touch "$dest" 2>/dev/null
   else
     echo "${REAL_CMD:-rm}: $f: could not move to trash" >&2
@@ -384,10 +439,11 @@ _mv_file_to_ai_trash_dir() {
 # Other volumes and Linux: mv to ai-trash subdirectory (unchanged).
 move_to_ai_trash() {
   local result=0
-  local deleted_at deleted_by deleted_proc
+  local deleted_at deleted_by deleted_proc proc_chain
   deleted_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   deleted_by=$(id -un)
   deleted_proc=$(_detect_ai_process_command)
+  proc_chain=$(_build_process_chain)
 
   # ── macOS: route boot-volume files through FSMoveObjectToTrashSync for Put Back ──
   if [[ "$PLATFORM" == "Darwin" ]]; then
@@ -478,11 +534,11 @@ PYEOF
         local rp="${result_paths[$i]:-}"
         if [[ -n "$rp" && (-e "$rp" || -L "$rp") ]]; then
           # FSMoveObjectToTrashSync succeeded: file is in ~/.Trash/, stamp with our xattrs
-          _write_meta "$rp" "$abs" "$deleted_at" "$deleted_by" "$deleted_proc" "$sz"
+          _write_meta "$rp" "$abs" "$deleted_at" "$deleted_by" "$deleted_proc" "$sz" "$proc_chain"
           touch "$rp" 2>/dev/null
         else
           # FSMoveObjectToTrashSync failed: fall back to mv into ai-trash subdir
-          _mv_file_to_ai_trash_dir "$f" "$abs" "$deleted_at" "$deleted_by" "$deleted_proc" "$sz" \
+          _mv_file_to_ai_trash_dir "$f" "$abs" "$deleted_at" "$deleted_by" "$deleted_proc" "$sz" "$proc_chain" \
             || result=1
         fi
       done
@@ -494,7 +550,7 @@ PYEOF
         local abs="" sz=""
         abs=$(realpath "$f" 2>/dev/null || echo "$f")
         [[ -f "$f" || -L "$f" ]] && sz=$(_stat_size "$f")
-        _mv_file_to_ai_trash_dir "$f" "$abs" "$deleted_at" "$deleted_by" "$deleted_proc" "$sz" \
+        _mv_file_to_ai_trash_dir "$f" "$abs" "$deleted_at" "$deleted_by" "$deleted_proc" "$sz" "$proc_chain" \
           || result=1
       done
     fi
@@ -511,7 +567,7 @@ PYEOF
     local abs="" sz=""
     abs=$(realpath "$f" 2>/dev/null || echo "$f")
     [[ -f "$f" || -L "$f" ]] && sz=$(_stat_size "$f")
-    _mv_file_to_ai_trash_dir "$f" "$abs" "$deleted_at" "$deleted_by" "$deleted_proc" "$sz" \
+    _mv_file_to_ai_trash_dir "$f" "$abs" "$deleted_at" "$deleted_by" "$deleted_proc" "$sz" "$proc_chain" \
       || result=1
   done
 
