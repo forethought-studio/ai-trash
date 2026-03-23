@@ -81,13 +81,13 @@ function _AiTrash-IsAiProcess {
         $procMap[$p.ProcessId] = $p
     }
 
-    $pid = $PID
+    $currentPid = $PID
     $visited = [System.Collections.Generic.HashSet[int]]::new()
 
     while ($true) {
-        if (-not $visited.Add($pid)) { break }   # loop guard
+        if (-not $visited.Add($currentPid)) { break }   # loop guard
 
-        $proc = $procMap[$pid]
+        $proc = $procMap[$currentPid]
         if ($null -eq $proc) { break }
 
         $procName = [System.IO.Path]::GetFileNameWithoutExtension($proc.Name)
@@ -105,8 +105,8 @@ function _AiTrash-IsAiProcess {
         }
 
         $parentId = $proc.ParentProcessId
-        if ($parentId -le 1 -or $parentId -eq $pid) { break }
-        $pid = $parentId
+        if ($parentId -le 1 -or $parentId -eq $currentPid) { break }
+        $currentPid = $parentId
     }
 
     return $false
