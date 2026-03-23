@@ -304,6 +304,22 @@ $m2Entry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absFm2
 if ($m1Entry) { _Pass "multi: file 1 manifest entry created" } else { _Fail "multi: file 1 not in manifest" }
 if ($m2Entry) { _Pass "multi: file 2 manifest entry created" } else { _Fail "multi: file 2 not in manifest" }
 
+_Section "rm_wrapper: -Verbose flag prints deleted file path"
+$fVerbose   = Join-Path $WorkDir "verbose-test.txt"
+"verbose-content" | Set-Content $fVerbose
+$verboseOut = (Remove-Item -LiteralPath $fVerbose -Verbose) 6>&1
+$verboseStr = ($verboseOut | ForEach-Object { "$_" }) -join "`n"
+
+if (-not (Test-Path $fVerbose)) { _Pass "verbose: file deleted" }
+else { _Fail "verbose: file still exists after Remove-Item -Verbose" }
+
+$verboseManEntry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq ([System.IO.Path]::GetFullPath($fVerbose)) }
+if ($verboseManEntry) { _Pass "verbose: manifest entry created" }
+else { _Fail "verbose: no manifest entry" }
+
+if ($verboseStr -match [regex]::Escape($fVerbose)) { _Pass "verbose: file path printed to output" }
+else { _Fail "verbose: file path not in output. Got: '$verboseStr'" }
+
 _Section "ai-trash CLI: list — stale manifest entry shown as GONE and removed"
 $phantomPath  = Join-Path $WorkDir "phantom-gone.txt"
 $absPhantom   = [System.IO.Path]::GetFullPath($phantomPath)
@@ -468,6 +484,32 @@ _Section "ai-trash CLI: version"
 $out = (_AiTrash @('version')) -join "`n"
 if ($out -match '1\.\d+\.\d+') { _Pass "version: $($out.Trim())" }
 else { _Fail "version: unexpected output: $out" }
+
+_Section "ai-trash CLI: unknown command exits non-zero"
+_AiTrash @('badcommand') | Out-Null
+if ($LASTEXITCODE -ne 0) { _Pass "unknown command: exits non-zero" }
+else { _Fail "unknown command: unexpectedly exited 0" }
+
+_Section "ai-trash CLI: status size formatting (B / K / M / G)"
+$fmtBase = @(_ReadTestManifest)
+foreach ($tc in @(
+    [pscustomobject]@{ Label='512B';  Bytes='512';        Pattern='512B'  },
+    [pscustomobject]@{ Label='1.5K';  Bytes='1536';       Pattern='1\.5K' },
+    [pscustomobject]@{ Label='2.0M';  Bytes='2097152';    Pattern='2\.0M' },
+    [pscustomobject]@{ Label='2.0G';  Bytes='2147483648'; Pattern='2\.0G' }
+)) {
+    _AiTrash-WriteManifest -Entries @([ordered]@{
+        'original-path'      = (Join-Path $WorkDir 'fmt-size.txt')
+        'deleted-at'         = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        'deleted-by'         = $env:USERNAME
+        'deleted-by-process' = 'test'
+        'original-size'      = $tc.Bytes
+    })
+    $out = (_AiTrash @('status')) -join "`n"
+    _AiTrash-WriteManifest -Entries $fmtBase
+    if ($out -match $tc.Pattern) { _Pass "FmtSize: $($tc.Label)" }
+    else { _Fail "FmtSize: $($tc.Label) — expected pattern '$($tc.Pattern)' in: $out" }
+}
 
 # ─── Cleanup ──────────────────────────────────────────────────────────────────
 # Empty any remaining Recycle Bin entries from our tests before removing WorkDir.
