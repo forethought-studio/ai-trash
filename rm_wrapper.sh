@@ -158,8 +158,12 @@ _detect_ai_process_command() {
     pid="$ppid"
   done
 
-  # No AI process found — fall back to immediate parent command
-  ps -p $PPID -o comm= 2>/dev/null | sed 's/^ *//'
+  # No AI process found — fall back to immediate parent shell + "(human)" label.
+  # Strip leading dash from login-shell names (e.g. -zsh → zsh) so xattr -w
+  # doesn't misinterpret the value as option flags.
+  local shell_name
+  shell_name=$(ps -p $PPID -o comm= 2>/dev/null | sed 's/^ *-\{0,1\}//')
+  [[ -n "$shell_name" ]] && printf '%s (human)' "$shell_name"
 }
 
 # ─── Platform helpers ──────────────────────────────────────────────────

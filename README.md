@@ -29,9 +29,9 @@ ai-trash has three modes, configured in `~/.config/ai-trash/config.sh`:
 | Mode | Your `rm` calls | AI tool `rm` calls |
 |------|----------------|-------------------|
 | `selective` *(default)* | pass through to `/bin/rm` unchanged | → ai-trash |
-| `safe` | → system Trash (recoverable, with Put Back) | → ai-trash |
+| `safe` | → system Trash (recoverable, with Put Back, tracked by ai-trash) | → ai-trash |
 
-`selective` is the default — your own commands behave exactly as before, only AI tool deletions are intercepted. `safe` is for anyone who wants nothing to silently disappear from the terminal.
+`selective` is the default — your own commands behave exactly as before, only AI tool deletions are intercepted. `safe` routes your own deletions to the system Trash and tags them with ai-trash metadata, so `ai-trash list` shows everything and nothing silently disappears.
 
 Detection works by checking environment variables first (IDE terminals like Cursor and VS Code set `TERM_PROGRAM`), then walking the full process tree up to PID 1. Covered out of the box: Claude Code, Gemini CLI, Codex, Aider, Goose, OpenCode, Devin, Kiro CLI, OpenHands, GitHub Copilot CLI, Cursor, VS Code, Windsurf, and Warp. Add your own tools in the config file.
 
@@ -124,7 +124,7 @@ xattr -p com.ai-trash.original-path  ~/.Trash/myfile.txt
 xattr -p com.ai-trash.deleted-at     ~/.Trash/myfile.txt
 xattr -p com.ai-trash.deleted-by     ~/.Trash/myfile.txt
 xattr -p com.ai-trash.original-size  ~/.Trash/myfile.txt
-xattr -p com.ai-trash.deleted-by-process  ~/.Trash/myfile.txt
+xattr -p com.ai-trash.deleted-by-process  ~/.Trash/myfile.txt   # e.g. "claude --resume abc123"
 
 # Linux / external drives
 xattr -p com.ai-trash.original-path  ~/.local/share/Trash/ai-trash/myfile.txt
