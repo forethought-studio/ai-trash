@@ -205,6 +205,19 @@ $collCount   = ($collEntries | Measure-Object).Count
 if ($collCount -ge 2) { _Pass "collision: both copies tracked in manifest ($collCount entries)" }
 else { _Fail "collision: expected 2 manifest entries for collision.txt, found $collCount" }
 
+_Section "rm_wrapper: collision restore — most recent version restored"
+$out = (_AiTrash @('restore', 'collision.txt')) -join "`n"
+if (Test-Path $fa) {
+    _Pass "collision restore: file restored"
+    $restoredContent = (Get-Content $fa -Raw).Trim()
+    if ($restoredContent -eq 'second') { _Pass "collision restore: most-recent content ('second') restored" }
+    else { _Fail "collision restore: expected 'second', got '$restoredContent'" }
+    $collAfter = @(_ReadTestManifest) | Where-Object { (Split-Path $_.'original-path' -Leaf) -eq 'collision.txt' }
+    if ($collAfter.Count -eq 1) { _Pass "collision restore: one manifest entry remains after restore" }
+    else { _Fail "collision restore: expected 1 remaining entry, found $($collAfter.Count)" }
+    Microsoft.PowerShell.Management\Remove-Item -LiteralPath $fa -Force -ErrorAction SilentlyContinue
+} else { _Fail "collision restore: file not restored. Output: $out" }
+
 _Section "rm_wrapper: missing file with -Force — no error"
 try {
     Remove-Item -LiteralPath (Join-Path $WorkDir "does-not-exist.txt") -Force
@@ -253,6 +266,112 @@ if (-not $safeEntry) { _Pass "safe: no manifest entry (non-AI caller not tracked
 else { _Fail "safe: manifest entry unexpectedly created for non-AI caller in safe mode" }
 _SetMode 'always'
 
+_Section "rm_wrapper: selective mode — AI env var (TERM_PROGRAM=cursor) routes to ai-trash"
+$savedTermProgram = $env:TERM_PROGRAM
+$env:TERM_PROGRAM = 'cursor'
+_SetMode 'selective'
+$fEnv    = Join-Path $WorkDir "envvar-ai.txt"
+"envvar-content" | Set-Content $fEnv
+$absFEnv = [System.IO.Path]::GetFullPath($fEnv)
+Remove-Item -LiteralPath $fEnv
+
+if (-not (Test-Path $fEnv)) { _Pass "env-var: file deleted" }
+else { _Fail "env-var: file still exists" }
+
+$envEntry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absFEnv }
+if ($envEntry) { _Pass "env-var: manifest entry created (TERM_PROGRAM=cursor detected as AI)" }
+else { _Fail "env-var: no manifest entry — TERM_PROGRAM=cursor not detected as AI caller" }
+
+$envBinItem = _FindInBin -OriginalPath $absFEnv
+if ($envBinItem) { _Pass "env-var: file in Recycle Bin" }
+else { _Fail "env-var: file not in Recycle Bin" }
+
+$env:TERM_PROGRAM = $savedTermProgram
+_SetMode 'always'
+
+_Section "rm_wrapper: multiple paths in one Remove-Item call"
+$fm1    = Join-Path $WorkDir "multi1.txt"; "m1" | Set-Content $fm1
+$fm2    = Join-Path $WorkDir "multi2.txt"; "m2" | Set-Content $fm2
+$absFm1 = [System.IO.Path]::GetFullPath($fm1)
+$absFm2 = [System.IO.Path]::GetFullPath($fm2)
+Remove-Item -LiteralPath $fm1, $fm2
+
+if (-not (Test-Path $fm1)) { _Pass "multi: file 1 deleted" } else { _Fail "multi: file 1 still exists" }
+if (-not (Test-Path $fm2)) { _Pass "multi: file 2 deleted" } else { _Fail "multi: file 2 still exists" }
+$m1Entry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absFm1 }
+$m2Entry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absFm2 }
+if ($m1Entry) { _Pass "multi: file 1 manifest entry created" } else { _Fail "multi: file 1 not in manifest" }
+if ($m2Entry) { _Pass "multi: file 2 manifest entry created" } else { _Fail "multi: file 2 not in manifest" }
+
+_Section "ai-trash CLI: list — stale manifest entry shown as GONE and removed"
+$phantomPath  = Join-Path $WorkDir "phantom-gone.txt"
+$absPhantom   = [System.IO.Path]::GetFullPath($phantomPath)
+$staleEntries = @(_ReadTestManifest)
+$phantomEntry = [ordered]@{
+    'original-path'      = $absPhantom
+    'deleted-at'         = (Get-Date).AddHours(-1).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    'deleted-by'         = $env:USERNAME
+    'deleted-by-process' = 'test'
+    'original-size'      = '0'
+}
+_AiTrash-WriteManifest -Entries ($staleEntries + @($phantomEntry))
+$countBeforeList = @(_ReadTestManifest).Count
+
+$out = (_AiTrash @('list')) -join "`n"
+
+$countAfterList = @(_ReadTestManifest).Count
+if ($out -match 'phantom-gone') { _Pass "list stale: GONE item shown in output" }
+else { _Fail "list stale: GONE item not shown. Output: $out" }
+if ($countAfterList -eq $countBeforeList - 1) { _Pass "list stale: stale entry removed from manifest" }
+else { _Fail "list stale: expected $($countBeforeList - 1) entries after list, got $countAfterList" }
+
+_Section "ai-trash CLI: restore — stale manifest entry (bin item gone) warns and exits non-zero"
+$phantomRestorePath = Join-Path $WorkDir "phantom-restore.txt"
+$absPhantomRestore  = [System.IO.Path]::GetFullPath($phantomRestorePath)
+$prEntries          = @(_ReadTestManifest)
+$prPhantomEntry     = [ordered]@{
+    'original-path'      = $absPhantomRestore
+    'deleted-at'         = (Get-Date).AddHours(-1).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    'deleted-by'         = $env:USERNAME
+    'deleted-by-process' = 'test'
+    'original-size'      = '0'
+}
+_AiTrash-WriteManifest -Entries ($prEntries + @($prPhantomEntry))
+
+_AiTrash @('restore', 'phantom-restore.txt') | Out-Null
+if ($LASTEXITCODE -ne 0) { _Pass "restore stale: exits non-zero when bin item gone" }
+else { _Fail "restore stale: unexpectedly exited 0" }
+$staleStill = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absPhantomRestore }
+if (-not $staleStill) { _Pass "restore stale: stale manifest entry removed" }
+else { _Fail "restore stale: stale entry still in manifest after failed restore" }
+
+_Section "ai-trash CLI: restore — no argument exits non-zero"
+_AiTrash @('restore') | Out-Null
+if ($LASTEXITCODE -ne 0) { _Pass "restore no-arg: exits non-zero" }
+else { _Fail "restore no-arg: unexpectedly exited 0" }
+
+_Section "ai-trash CLI: restore — unknown item exits non-zero"
+_AiTrash @('restore', 'definitely-not-in-trash-xyzzy.txt') | Out-Null
+if ($LASTEXITCODE -ne 0) { _Pass "restore not-found: exits non-zero" }
+else { _Fail "restore not-found: unexpectedly exited 0" }
+
+_Section "ai-trash CLI: restore — recreates missing parent directory"
+$deepParent = Join-Path $WorkDir "deep\nested\dir"
+New-Item -ItemType Directory -Force -Path $deepParent | Out-Null
+$fDeep      = Join-Path $deepParent "deep-file.txt"
+"deep-content" | Set-Content $fDeep
+$absFDeep   = [System.IO.Path]::GetFullPath($fDeep)
+Remove-Item -LiteralPath $fDeep
+Microsoft.PowerShell.Management\Remove-Item -LiteralPath (Join-Path $WorkDir "deep") -Recurse -Force
+if (-not (Test-Path (Join-Path $WorkDir "deep"))) { _Pass "restore parent: parent dir removed" }
+else { _Fail "restore parent: failed to remove parent dir" }
+$out = (_AiTrash @('restore', 'deep-file.txt')) -join "`n"
+if (Test-Path $fDeep) {
+    _Pass "restore parent: file restored to recreated directory"
+    if ((Get-Content $fDeep -Raw).Trim() -eq 'deep-content') { _Pass "restore parent: content intact" }
+    else { _Fail "restore parent: content corrupted" }
+} else { _Fail "restore parent: file not at original path. Output: $out" }
+
 _Section "ai-trash-cleanup.ps1: old entries purged from manifest and Recycle Bin"
 # Delete a file so it lands in the bin + manifest.
 $cleanupOldFile = Join-Path $WorkDir "cleanup-old.txt"
@@ -293,6 +412,37 @@ else { _Fail "cleanup: expected $expectedAfter entries after cleanup, got $($aft
 $binAfterCleanup = _FindInBin -OriginalPath $absCleanupOld
 if (-not $binAfterCleanup) { _Pass "cleanup: old bin item deleted from Recycle Bin" }
 else { _Fail "cleanup: old bin item still in Recycle Bin after cleanup" }
+
+_Section "ai-trash-cleanup.ps1: entry with unparseable deleted-at is kept"
+$preBadDate   = @(_ReadTestManifest)
+$badDateEntry = [ordered]@{
+    'original-path'      = (Join-Path $WorkDir "bad-date-phantom.txt")
+    'deleted-at'         = 'not-a-valid-date'
+    'deleted-by'         = $env:USERNAME
+    'deleted-by-process' = 'test'
+    'original-size'      = '0'
+}
+_AiTrash-WriteManifest -Entries ($preBadDate + @($badDateEntry))
+
+& pwsh -NoProfile -NonInteractive -File "$RepoDir\windows\ai-trash-cleanup.ps1" -DaysOld 30 2>&1 | Out-Null
+
+$postBadDate = @(_ReadTestManifest)
+$survived    = $postBadDate | Where-Object { $_.'deleted-at' -eq 'not-a-valid-date' }
+if ($survived) { _Pass "cleanup bad-date: entry with unparseable date not purged" }
+else { _Fail "cleanup bad-date: entry with unparseable date was incorrectly purged" }
+
+# Remove phantom entry so it does not affect subsequent tests.
+_AiTrash-WriteManifest -Entries (@(_ReadTestManifest) | Where-Object { $_.'deleted-at' -ne 'not-a-valid-date' })
+
+_Section "ai-trash CLI: empty --older-than without value exits non-zero"
+_AiTrash @('empty', '--older-than') | Out-Null
+if ($LASTEXITCODE -ne 0) { _Pass "empty --older-than: missing value exits non-zero" }
+else { _Fail "empty --older-than: missing value unexpectedly exited 0" }
+
+_Section "ai-trash CLI: empty unknown option exits non-zero"
+_AiTrash @('empty', '--unknown-option') | Out-Null
+if ($LASTEXITCODE -ne 0) { _Pass "empty unknown-option: exits non-zero" }
+else { _Fail "empty unknown-option: unexpectedly exited 0" }
 
 _Section "ai-trash CLI: empty --older-than (recent items not deleted)"
 $beforeCount = @(_ReadTestManifest).Count
