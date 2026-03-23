@@ -271,6 +271,7 @@ Write-Host ""
 Write-Host "──────────────────────────────────────"
 if ($script:FAILURES -eq 0) {
     Write-Host "All tests passed." -ForegroundColor Green
+    exit 0
 } else {
     Write-Host "$($script:FAILURES) test(s) failed." -ForegroundColor Red
     exit 1
