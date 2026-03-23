@@ -217,6 +217,42 @@ try {
     _Fail "missing file without -Force should have thrown"
 } catch { _Pass "missing file without -Force throws as expected" }
 
+_Section "rm_wrapper: selective mode — non-AI caller passes through (permanent delete)"
+_SetMode 'selective'
+$fSel    = Join-Path $WorkDir "selective-passthrough.txt"
+"selective-content" | Set-Content $fSel
+$absFSel = [System.IO.Path]::GetFullPath($fSel)
+Remove-Item -LiteralPath $fSel
+
+if (-not (Test-Path $fSel)) { _Pass "selective: file deleted" }
+else { _Fail "selective: file still exists after Remove-Item" }
+
+$selEntry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absFSel }
+if (-not $selEntry) { _Pass "selective: no manifest entry (non-AI caller bypasses ai-trash)" }
+else { _Fail "selective: manifest entry unexpectedly created for non-AI caller" }
+
+$selBinItem = _FindInBin -OriginalPath $absFSel
+if (-not $selBinItem) { _Pass "selective: not in Recycle Bin (permanent delete)" }
+else { _Fail "selective: file in Recycle Bin; expected permanent delete for non-AI caller" }
+_SetMode 'always'
+
+_Section "rm_wrapper: safe mode — non-AI caller deleted, no manifest entry"
+_SetMode 'safe'
+$fSafe    = Join-Path $WorkDir "safe-passthrough.txt"
+"safe-content" | Set-Content $fSafe
+$absFSafe = [System.IO.Path]::GetFullPath($fSafe)
+Remove-Item -LiteralPath $fSafe
+
+# File must be gone from its original path (Recycle Bin or permanent delete — both acceptable in headless CI).
+if (-not (Test-Path $fSafe)) { _Pass "safe: file deleted from original path" }
+else { _Fail "safe: file still exists after Remove-Item" }
+
+# Critically: safe mode must NOT write a manifest entry for a non-AI caller.
+$safeEntry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absFSafe }
+if (-not $safeEntry) { _Pass "safe: no manifest entry (non-AI caller not tracked)" }
+else { _Fail "safe: manifest entry unexpectedly created for non-AI caller in safe mode" }
+_SetMode 'always'
+
 _Section "ai-trash-cleanup.ps1: old entries purged from manifest and Recycle Bin"
 # Delete a file so it lands in the bin + manifest.
 $cleanupOldFile = Join-Path $WorkDir "cleanup-old.txt"
