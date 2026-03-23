@@ -199,6 +199,7 @@ else { _Fail "always: directory manifest entry not found. Manifest: $(Get-Conten
 _Section "rm_wrapper: name collision — two files with same name"
 $fa = Join-Path $WorkDir "collision.txt"
 "first"  | Set-Content $fa; Remove-Item -LiteralPath $fa
+Start-Sleep -Seconds 2   # ensure distinct second-precision deleted-at timestamps
 "second" | Set-Content $fa; Remove-Item -LiteralPath $fa
 $collEntries = (_ReadTestManifest) | Where-Object { (Split-Path $_.'original-path' -Leaf) -eq 'collision.txt' }
 $collCount   = ($collEntries | Measure-Object).Count
