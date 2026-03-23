@@ -267,6 +267,29 @@ if (-not $safeEntry) { _Pass "safe: no manifest entry (non-AI caller not tracked
 else { _Fail "safe: manifest entry unexpectedly created for non-AI caller in safe mode" }
 _SetMode 'always'
 
+_Section "rm_wrapper: safe mode — AI caller (TERM_PROGRAM=cursor) still routes to ai-trash"
+$savedTermProgramSafe = $env:TERM_PROGRAM
+$env:TERM_PROGRAM = 'cursor'
+_SetMode 'safe'
+$fSafeAi    = Join-Path $WorkDir "safe-ai-caller.txt"
+$absFSafeAi = [System.IO.Path]::GetFullPath($fSafeAi)
+"safe-ai-content" | Set-Content $fSafeAi
+Remove-Item -LiteralPath $fSafeAi
+
+if (-not (Test-Path $fSafeAi)) { _Pass "safe AI: file deleted" }
+else { _Fail "safe AI: file still exists" }
+
+$safeAiEntry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absFSafeAi }
+if ($safeAiEntry) { _Pass "safe AI: manifest entry created (AI caller in safe mode routes to ai-trash)" }
+else { _Fail "safe AI: no manifest entry — AI caller in safe mode should go to ai-trash" }
+
+$safeAiBinItem = _FindInBin -OriginalPath $absFSafeAi
+if ($safeAiBinItem) { _Pass "safe AI: file in Recycle Bin" }
+else { _Fail "safe AI: file not in Recycle Bin" }
+
+$env:TERM_PROGRAM = $savedTermProgramSafe
+_SetMode 'always'
+
 _Section "rm_wrapper: selective mode — AI env var (TERM_PROGRAM=cursor) routes to ai-trash"
 $savedTermProgram = $env:TERM_PROGRAM
 $env:TERM_PROGRAM = 'cursor'
@@ -303,6 +326,32 @@ $m1Entry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absFm1
 $m2Entry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absFm2 }
 if ($m1Entry) { _Pass "multi: file 1 manifest entry created" } else { _Fail "multi: file 1 not in manifest" }
 if ($m2Entry) { _Pass "multi: file 2 manifest entry created" } else { _Fail "multi: file 2 not in manifest" }
+
+_Section "rm_wrapper: wildcard path expansion (Remove-Item -Path *.txt)"
+$fw1    = Join-Path $WorkDir "wildcard-a.txt"; "wa" | Set-Content $fw1
+$fw2    = Join-Path $WorkDir "wildcard-b.txt"; "wb" | Set-Content $fw2
+$absFw1 = [System.IO.Path]::GetFullPath($fw1)
+$absFw2 = [System.IO.Path]::GetFullPath($fw2)
+Remove-Item -Path (Join-Path $WorkDir "wildcard-*.txt")
+
+if (-not (Test-Path $fw1)) { _Pass "wildcard: file 1 deleted" } else { _Fail "wildcard: file 1 still exists" }
+if (-not (Test-Path $fw2)) { _Pass "wildcard: file 2 deleted" } else { _Fail "wildcard: file 2 still exists" }
+$wc1Entry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absFw1 }
+$wc2Entry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absFw2 }
+if ($wc1Entry) { _Pass "wildcard: file 1 in manifest" } else { _Fail "wildcard: file 1 not in manifest" }
+if ($wc2Entry) { _Pass "wildcard: file 2 in manifest" } else { _Fail "wildcard: file 2 not in manifest" }
+
+_Section "rm_wrapper: pipeline input (Get-Item | Remove-Item)"
+$fPipe    = Join-Path $WorkDir "pipeline-test.txt"
+$absFPipe = [System.IO.Path]::GetFullPath($fPipe)
+"pipe-content" | Set-Content $fPipe
+Get-Item -LiteralPath $fPipe | Remove-Item
+
+if (-not (Test-Path $fPipe)) { _Pass "pipeline: file deleted" } else { _Fail "pipeline: file still exists" }
+$pipeEntry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absFPipe }
+if ($pipeEntry) { _Pass "pipeline: file in manifest" } else { _Fail "pipeline: file not in manifest" }
+$pipeBinItem = _FindInBin -OriginalPath $absFPipe
+if ($pipeBinItem) { _Pass "pipeline: file in Recycle Bin" } else { _Fail "pipeline: file not in Recycle Bin" }
 
 _Section "rm_wrapper: -Verbose flag prints deleted file path"
 $fVerbose   = Join-Path $WorkDir "verbose-test.txt"
@@ -386,6 +435,32 @@ _AiTrash @('restore', 'definitely-not-in-trash-xyzzy.txt') | Out-Null
 if ($LASTEXITCODE -ne 0) { _Pass "restore not-found: exits non-zero" }
 else { _Fail "restore not-found: unexpectedly exited 0" }
 
+_Section "ai-trash CLI: restore — overwrite prompt accepts y"
+$fOwY    = Join-Path $WorkDir "overwrite-y.txt"
+$absFOwY = [System.IO.Path]::GetFullPath($fOwY)
+"original" | Set-Content $fOwY
+Remove-Item -LiteralPath $fOwY
+"blocker" | Set-Content $fOwY
+$owYOut = ("y" | & pwsh -NoProfile -File "$RepoDir\windows\ai-trash.ps1" restore overwrite-y.txt 2>&1) -join "`n"
+if (Test-Path $fOwY) {
+    $owYContent = (Get-Content $fOwY -Raw).Trim()
+    if ($owYContent -eq 'original') { _Pass "restore overwrite y: original content restored" }
+    else { _Fail "restore overwrite y: content='$owYContent' (expected 'original')" }
+} else { _Fail "restore overwrite y: file missing after restore. Output: $owYOut" }
+
+_Section "ai-trash CLI: restore — overwrite prompt aborted by n"
+$fOwN    = Join-Path $WorkDir "overwrite-n.txt"
+$absFOwN = [System.IO.Path]::GetFullPath($fOwN)
+"to-trash" | Set-Content $fOwN
+Remove-Item -LiteralPath $fOwN
+"keep-this" | Set-Content $fOwN
+"n" | & pwsh -NoProfile -File "$RepoDir\windows\ai-trash.ps1" restore overwrite-n.txt 2>&1 | Out-Null
+if (Test-Path $fOwN) {
+    $owNContent = (Get-Content $fOwN -Raw).Trim()
+    if ($owNContent -eq 'keep-this') { _Pass "restore overwrite n: existing file preserved" }
+    else { _Fail "restore overwrite n: content='$owNContent'" }
+} else { _Fail "restore overwrite n: file missing after aborted restore" }
+
 _Section "ai-trash CLI: restore — recreates missing parent directory"
 $deepParent = Join-Path $WorkDir "deep\nested\dir"
 New-Item -ItemType Directory -Force -Path $deepParent | Out-Null
@@ -465,6 +540,29 @@ else { _Fail "cleanup bad-date: entry with unparseable date was incorrectly purg
 # Remove phantom entry so it does not affect subsequent tests.
 _AiTrash-WriteManifest -Entries (@(_ReadTestManifest) | Where-Object { $_.'deleted-at' -ne 'not-a-valid-date' })
 
+_Section "ai-trash-cleanup.ps1: old manifest entry with no bin item removed from manifest"
+$ghostPath     = Join-Path $WorkDir "ghost-no-bin.txt"
+$absGhostNoBin = [System.IO.Path]::GetFullPath($ghostPath)
+$ghostNoBinEntry = [ordered]@{
+    'original-path'      = $absGhostNoBin
+    'deleted-at'         = (Get-Date).AddDays(-31).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    'deleted-by'         = $env:USERNAME
+    'deleted-by-process' = 'test'
+    'original-size'      = '0'
+}
+$preGhostEntries = @(_ReadTestManifest)
+_AiTrash-WriteManifest -Entries ($preGhostEntries + @($ghostNoBinEntry))
+$countBeforeGhost = @(_ReadTestManifest).Count
+
+& pwsh -NoProfile -NonInteractive -File "$RepoDir\windows\ai-trash-cleanup.ps1" -DaysOld 30 2>&1 | Out-Null
+
+$afterGhost = @(_ReadTestManifest)
+$ghostStill = $afterGhost | Where-Object { $_.'original-path' -ieq $absGhostNoBin }
+if (-not $ghostStill) { _Pass "cleanup no-bin: old entry without bin item removed from manifest" }
+else { _Fail "cleanup no-bin: entry still present despite no bin item and old date" }
+if ($afterGhost.Count -eq $countBeforeGhost - 1) { _Pass "cleanup no-bin: manifest count correct ($($afterGhost.Count) remain)" }
+else { _Fail "cleanup no-bin: expected $($countBeforeGhost - 1) entries, got $($afterGhost.Count)" }
+
 _Section "ai-trash CLI: empty --older-than without value exits non-zero"
 _AiTrash @('empty', '--older-than') | Out-Null
 if ($LASTEXITCODE -ne 0) { _Pass "empty --older-than: missing value exits non-zero" }
@@ -524,6 +622,21 @@ foreach ($tc in @(
     if ($out -match $tc.Pattern) { _Pass "FmtSize: $($tc.Label)" }
     else { _Fail "FmtSize: $($tc.Label) — expected pattern '$($tc.Pattern)' in: $out" }
 }
+
+_Section "ai-trash CLI: status shows oldest and newest item names"
+$nowStr  = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+$oldStr  = (Get-Date).AddHours(-2).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+$statusBase = @(_ReadTestManifest)
+_AiTrash-WriteManifest -Entries @(
+    [ordered]@{ 'original-path' = (Join-Path $WorkDir 'newest-item.txt'); 'deleted-at' = $nowStr; 'deleted-by' = $env:USERNAME; 'deleted-by-process' = 'test'; 'original-size' = '100' },
+    [ordered]@{ 'original-path' = (Join-Path $WorkDir 'oldest-item.txt'); 'deleted-at' = $oldStr; 'deleted-by' = $env:USERNAME; 'deleted-by-process' = 'test'; 'original-size' = '200' }
+)
+$out = (_AiTrash @('status')) -join "`n"
+_AiTrash-WriteManifest -Entries $statusBase
+if ($out -match 'Oldest:.*oldest-item') { _Pass "status: oldest item name shown" }
+else { _Fail "status: oldest item not shown. Output: $out" }
+if ($out -match 'Newest:.*newest-item') { _Pass "status: newest item name shown" }
+else { _Fail "status: newest item not shown. Output: $out" }
 
 # ─── Cleanup ──────────────────────────────────────────────────────────────────
 # Empty any remaining Recycle Bin entries from our tests before removing WorkDir.
