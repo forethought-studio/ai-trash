@@ -273,6 +273,235 @@ else
   _fail "status: unexpected output after empty: $out"
 fi
 
+# ─── Additional gap coverage ────────────────────────────────────────────
+
+_section "rm_wrapper: path with spaces in name"
+_set_mode selective
+f_spaces="$WORK_DIR/file with spaces.txt"
+echo "spaced" > "$f_spaces"
+_rm "$f_spaces"
+if ls "$TEST_TRASH/" 2>/dev/null | grep -q "file with spaces.txt"; then
+  _pass "spaces: file with spaces moved to ai-trash"
+else
+  _fail "spaces: file with spaces not in ai-trash. Contents: $(ls "$TEST_TRASH/" 2>/dev/null || echo 'empty')"
+fi
+
+_section "rm_wrapper: path guard — refuses /, ., .."
+for _g in "/" "." ".."; do
+  _g_out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor bash "$REPO_DIR/rm_wrapper.sh" "$_g" 2>&1; echo "EXIT:$?")
+  _g_exit=$(echo "$_g_out" | grep "EXIT:" | cut -d: -f2)
+  [[ "$_g_exit" == "1" ]] && _pass "guard '$_g': refused (exit 1)" || _fail "guard '$_g': exit=$_g_exit"
+done
+
+_section "rm_wrapper: -- double-dash operand separator"
+f_dd="$WORK_DIR/double-dash-test.txt"
+echo "dd" > "$f_dd"
+_rm -- "$f_dd"
+if ls "$TEST_TRASH/" 2>/dev/null | grep -q "double-dash-test.txt"; then
+  _pass "double-dash: file after -- moved to ai-trash"
+else
+  _fail "double-dash: file not in ai-trash"
+fi
+
+_section "rm_wrapper: -v verbose flag"
+f_verbose="$WORK_DIR/verbose-rm-test.txt"
+echo "v" > "$f_verbose"
+v_out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor bash "$REPO_DIR/rm_wrapper.sh" -v "$f_verbose" 2>/dev/null)
+if [[ ! -f "$f_verbose" ]]; then
+  _pass "-v: file deleted"
+else
+  _fail "-v: file still exists"
+fi
+if echo "$v_out" | grep -q "verbose-rm-test.txt"; then
+  _pass "-v: filename printed to stdout"
+else
+  _fail "-v: filename not in output. Got: '$v_out'"
+fi
+
+_section "rm_wrapper: -d flag — empty directory trashed"
+d_empty_d="$WORK_DIR/empty-dir-flag"
+mkdir -p "$d_empty_d"
+_rm -d "$d_empty_d"
+if ls "$TEST_TRASH/" 2>/dev/null | grep -q "empty-dir-flag"; then
+  _pass "-d: empty dir moved to ai-trash"
+else
+  _fail "-d: empty dir not in ai-trash. Contents: $(ls "$TEST_TRASH/" 2>/dev/null || echo 'empty')"
+fi
+
+_section "rm_wrapper: -d flag — non-empty directory errors"
+d_nonempty_d="$WORK_DIR/nonempty-dir-flag"
+mkdir -p "$d_nonempty_d"
+echo "x" > "$d_nonempty_d/file.txt"
+d_ne_out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor bash "$REPO_DIR/rm_wrapper.sh" -d "$d_nonempty_d" 2>&1; echo "EXIT:$?")
+d_ne_exit=$(echo "$d_ne_out" | grep "EXIT:" | cut -d: -f2)
+if [[ "$d_ne_exit" == "1" ]] && [[ -d "$d_nonempty_d" ]]; then
+  _pass "-d non-empty: exits 1, directory untouched"
+else
+  _fail "-d non-empty: exit=$d_ne_exit dir_exists=$(test -d "$d_nonempty_d" && echo yes || echo no)"
+fi
+/bin/rm -rf "$d_nonempty_d"
+
+_section "rm_wrapper: -I flag — prompt suppressed when no TTY (4 files all deleted)"
+f_Ia="$WORK_DIR/ionce-a.txt"; echo "a" > "$f_Ia"
+f_Ib="$WORK_DIR/ionce-b.txt"; echo "b" > "$f_Ib"
+f_Ic="$WORK_DIR/ionce-c.txt"; echo "c" > "$f_Ic"
+f_Id="$WORK_DIR/ionce-d.txt"; echo "d" > "$f_Id"
+echo "" | HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
+  bash "$REPO_DIR/rm_wrapper.sh" -I "$f_Ia" "$f_Ib" "$f_Ic" "$f_Id" 2>&1 || true
+_I_all=true
+for _fi in "$f_Ia" "$f_Ib" "$f_Ic" "$f_Id"; do [[ -f "$_fi" ]] && _I_all=false; done
+[[ "$_I_all" == true ]] && _pass "-I no-TTY: all 4 files deleted (prompt suppressed)" \
+  || _fail "-I no-TTY: not all files deleted"
+
+_section "rm_wrapper: symlink — symlink trashed, target intact"
+f_sym_target="$WORK_DIR/sym-target.txt"
+f_sym_link="$WORK_DIR/sym-link.txt"
+echo "target-content" > "$f_sym_target"
+ln -sf "$f_sym_target" "$f_sym_link"
+_rm "$f_sym_link"
+if ls "$TEST_TRASH/" 2>/dev/null | grep -q "sym-link.txt"; then
+  _pass "symlink: symlink moved to ai-trash"
+else
+  _fail "symlink: symlink not in ai-trash"
+fi
+if [[ -f "$f_sym_target" ]]; then
+  _pass "symlink: target file untouched"
+else
+  _fail "symlink: target file was deleted"
+fi
+
+# ─── rmdir wrapper ──────────────────────────────────────────────────────
+RMDIR_LINK="$WORK_DIR/rmdir"
+ln -sf "$REPO_DIR/rm_wrapper.sh" "$RMDIR_LINK"
+_rmdir() {
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor bash "$RMDIR_LINK" "$@"
+}
+
+_section "rmdir_wrapper: empty directory goes to ai-trash"
+d_rmdir_e="$WORK_DIR/rmdir-empty"
+mkdir -p "$d_rmdir_e"
+_rmdir "$d_rmdir_e"
+if ls "$TEST_TRASH/" 2>/dev/null | grep -q "rmdir-empty"; then
+  _pass "rmdir: empty dir moved to ai-trash"
+else
+  _fail "rmdir: empty dir not in ai-trash. Contents: $(ls "$TEST_TRASH/" 2>/dev/null || echo 'empty')"
+fi
+
+_section "rmdir_wrapper: non-empty directory errors"
+d_rmdir_ne="$WORK_DIR/rmdir-nonempty"
+mkdir -p "$d_rmdir_ne"
+echo "x" > "$d_rmdir_ne/file.txt"
+rmdir_ne_out=$(_rmdir "$d_rmdir_ne" 2>&1; echo "EXIT:$?")
+rmdir_ne_exit=$(echo "$rmdir_ne_out" | grep "EXIT:" | cut -d: -f2)
+if [[ "$rmdir_ne_exit" == "1" ]] && [[ -d "$d_rmdir_ne" ]]; then
+  _pass "rmdir: non-empty dir errors, directory untouched"
+else
+  _fail "rmdir: non-empty dir — exit=$rmdir_ne_exit dir_exists=$(test -d "$d_rmdir_ne" && echo yes || echo no)"
+fi
+/bin/rm -rf "$d_rmdir_ne"
+
+_section "rmdir_wrapper: non-existent directory errors"
+rmdir_nx_out=$(_rmdir "$WORK_DIR/rmdir-nonexistent" 2>&1; echo "EXIT:$?")
+rmdir_nx_exit=$(echo "$rmdir_nx_out" | grep "EXIT:" | cut -d: -f2)
+[[ "$rmdir_nx_exit" == "1" ]] && _pass "rmdir: non-existent dir exits 1" \
+  || _fail "rmdir: non-existent exits $rmdir_nx_exit"
+
+_section "rmdir_wrapper: -v flag prints directory name"
+d_rmdir_v="$WORK_DIR/rmdir-verbose"
+mkdir -p "$d_rmdir_v"
+rmdir_v_out=$(_rmdir -v "$d_rmdir_v" 2>&1)
+if echo "$rmdir_v_out" | grep -q "rmdir-verbose"; then
+  _pass "rmdir -v: directory name in output"
+else
+  _fail "rmdir -v: name not in output. Got: '$rmdir_v_out'"
+fi
+if ls "$TEST_TRASH/" 2>/dev/null | grep -q "rmdir-verbose"; then
+  _pass "rmdir -v: directory moved to ai-trash"
+else
+  _fail "rmdir -v: directory not in ai-trash"
+fi
+
+_section "rmdir_wrapper: -p flag removes parent chain"
+d_rmdir_p_root="$WORK_DIR/rmdir-p-root"
+d_rmdir_p_full="$d_rmdir_p_root/rmdir-p-child/rmdir-p-leaf"
+mkdir -p "$d_rmdir_p_full"
+_rmdir -p "$d_rmdir_p_full"
+if [[ ! -d "$d_rmdir_p_full" ]]; then
+  _pass "rmdir -p: leaf directory removed"
+else
+  _fail "rmdir -p: leaf directory still exists"
+fi
+if [[ ! -d "$d_rmdir_p_root/rmdir-p-child" ]]; then
+  _pass "rmdir -p: parent chain removed"
+else
+  _skip "rmdir -p: parent chain not fully removed (unexpected state)"
+fi
+
+_section "ai-trash CLI: restore — overwrite prompt accepts y"
+f_ow_y="$WORK_DIR/overwrite-y.txt"
+echo "original" > "$f_ow_y"
+_rm "$f_ow_y"
+echo "blocker" > "$f_ow_y"
+ow_y_out=$(echo "y" | HOME="$TEST_HOME" bash "$REPO_DIR/ai-trash" restore overwrite-y.txt 2>&1 || true)
+if [[ -f "$f_ow_y" ]]; then
+  ow_y_content=$(cat "$f_ow_y")
+  [[ "$ow_y_content" == "original" ]] \
+    && _pass "restore overwrite y: original content restored" \
+    || _fail "restore overwrite y: content='$ow_y_content' (expected 'original')"
+else
+  _fail "restore overwrite y: file missing after restore. Output: $ow_y_out"
+fi
+
+_section "ai-trash CLI: restore — overwrite prompt aborted by n"
+f_ow_n="$WORK_DIR/overwrite-n.txt"
+echo "to-trash" > "$f_ow_n"
+_rm "$f_ow_n"
+echo "keep-this" > "$f_ow_n"
+echo "n" | HOME="$TEST_HOME" bash "$REPO_DIR/ai-trash" restore overwrite-n.txt 2>&1 || true
+if [[ -f "$f_ow_n" ]]; then
+  ow_n_content=$(cat "$f_ow_n")
+  [[ "$ow_n_content" == "keep-this" ]] \
+    && _pass "restore overwrite n: existing file preserved" \
+    || _fail "restore overwrite n: content='$ow_n_content'"
+else
+  _fail "restore overwrite n: file missing after aborted restore"
+fi
+
+_section "ai-trash-cleanup: purges items older than 30 days"
+f_cleanup_old="$WORK_DIR/cleanup-old.txt"
+echo "old" > "$f_cleanup_old"
+_rm "$f_cleanup_old"
+_cleanup_old_item=$(ls "$TEST_TRASH/" 2>/dev/null | grep "^cleanup-old.txt" | head -1 || true)
+if [[ -n "$_cleanup_old_item" ]]; then
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    touch -t "$(date -v-31d +%Y%m%d%H%M)" "$TEST_TRASH/$_cleanup_old_item"
+  else
+    touch -t "$(date -d '31 days ago' +%Y%m%d%H%M)" "$TEST_TRASH/$_cleanup_old_item"
+  fi
+  HOME="$TEST_HOME" bash "$REPO_DIR/ai-trash-cleanup"
+  if ! ls "$TEST_TRASH/" 2>/dev/null | grep -q "^cleanup-old.txt"; then
+    _pass "ai-trash-cleanup: 31-day-old item purged"
+  else
+    _fail "ai-trash-cleanup: old item still present after cleanup"
+  fi
+else
+  _fail "ai-trash-cleanup: cleanup-old.txt not found in trash (setup failed)"
+fi
+
+_section "ai-trash-cleanup: preserves items newer than 30 days"
+f_cleanup_new="$WORK_DIR/cleanup-new.txt"
+echo "new" > "$f_cleanup_new"
+_rm "$f_cleanup_new"
+HOME="$TEST_HOME" bash "$REPO_DIR/ai-trash-cleanup"
+if ls "$TEST_TRASH/" 2>/dev/null | grep -q "cleanup-new.txt"; then
+  _pass "ai-trash-cleanup: recent item preserved"
+else
+  _fail "ai-trash-cleanup: recent item unexpectedly purged"
+fi
+
+# Clear items added by gap-coverage tests
+_ai_trash empty --force >/dev/null 2>&1
+
 _section "rm_wrapper: --help passes through to /bin/rm"
 out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/rm_wrapper.sh" --help 2>&1 || true)
 if echo "$out" | grep -qiE "usage|illegal option|remove"; then

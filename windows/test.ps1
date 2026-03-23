@@ -320,6 +320,20 @@ else { _Fail "verbose: no manifest entry" }
 if ($verboseStr -match [regex]::Escape($fVerbose)) { _Pass "verbose: file path printed to output" }
 else { _Fail "verbose: file path not in output. Got: '$verboseStr'" }
 
+_Section "rm_wrapper: path with spaces in name"
+$fSpaces   = Join-Path $WorkDir "file with spaces.txt"
+$absSpaces = [System.IO.Path]::GetFullPath($fSpaces)
+"spaced" | Set-Content -LiteralPath $fSpaces
+Remove-Item -LiteralPath $fSpaces
+
+$spacesEntry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absSpaces }
+if ($spacesEntry) { _Pass "spaces: file with spaces tracked in manifest" }
+else { _Fail "spaces: file with spaces not in manifest. Manifest: $(Get-Content $ManifestPath -Raw -EA SilentlyContinue)" }
+
+$spacesBinItem = _FindInBin -OriginalPath $absSpaces
+if ($spacesBinItem) { _Pass "spaces: file with spaces in Recycle Bin" }
+else { _Fail "spaces: file with spaces not in Recycle Bin" }
+
 _Section "ai-trash CLI: list — stale manifest entry shown as GONE and removed"
 $phantomPath  = Join-Path $WorkDir "phantom-gone.txt"
 $absPhantom   = [System.IO.Path]::GetFullPath($phantomPath)
