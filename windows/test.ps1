@@ -54,8 +54,13 @@ function _ReadTestManifest {
     if (-not (Test-Path -LiteralPath $ManifestPath)) { return @() }
     try {
         $json    = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8
-        $entries = $json | ConvertFrom-Json -AsHashtable
+        $entries = $json | ConvertFrom-Json
         if ($null -eq $entries) { return @() }
+        # PS7 auto-converts ISO 8601 strings to DateTime during JSON parse; normalize back to strings.
+        foreach ($e in @($entries)) {
+            $dat = $e.'deleted-at'
+            if ($dat -is [DateTime]) { $e.'deleted-at' = $dat.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
+        }
         return @($entries)
     } catch { return @() }
 }
@@ -230,16 +235,16 @@ if (Test-Path $legacyOrig) {
 } else { _Fail "legacy: restore from legacy folder failed. Output: $out" }
 
 _Section "ai-trash CLI: empty --older-than (recent items not deleted)"
-$beforeCount = (_ReadTestManifest).Count
+$beforeCount = @(_ReadTestManifest).Count
 _AiTrash @('empty', '--force', '--older-than', '1') | Out-Null
-$afterCount = (_ReadTestManifest).Count
+$afterCount = @(_ReadTestManifest).Count
 if ($beforeCount -eq $afterCount) { _Pass "empty --older-than 1: recent items untouched" }
 else { _Fail "empty --older-than 1: item count changed ($beforeCount -> $afterCount)" }
 
 _Section "ai-trash CLI: empty --force"
-$beforeCount = (_ReadTestManifest).Count
+$beforeCount = @(_ReadTestManifest).Count
 _AiTrash @('empty', '--force') | Out-Null
-$afterCount = (_ReadTestManifest).Count
+$afterCount = @(_ReadTestManifest).Count
 if ($afterCount -eq 0) { _Pass "empty --force: manifest cleared (was $beforeCount items)" }
 else { _Fail "empty --force: $afterCount manifest items remain" }
 

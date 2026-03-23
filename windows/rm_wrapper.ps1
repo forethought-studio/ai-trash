@@ -121,13 +121,13 @@ function _AiTrash-ReadManifest {
     if (-not (Test-Path -LiteralPath $path)) { return @() }
     try {
         $json    = Get-Content -LiteralPath $path -Raw -Encoding UTF8 -ErrorAction Stop
-        # Use -AsHashtable on PS6+ to prevent ISO 8601 dates from auto-converting to DateTime.
-        if ($PSVersionTable.PSVersion.Major -ge 6) {
-            $entries = $json | ConvertFrom-Json -AsHashtable
-        } else {
-            $entries = $json | ConvertFrom-Json
-        }
+        $entries = $json | ConvertFrom-Json
         if ($null -eq $entries) { return @() }
+        # PS7 auto-converts ISO 8601 strings to DateTime during JSON parse; normalize back to strings.
+        foreach ($e in @($entries)) {
+            $dat = $e.'deleted-at'
+            if ($dat -is [DateTime]) { $e.'deleted-at' = $dat.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
+        }
         return @($entries)
     } catch { return @() }
 }
