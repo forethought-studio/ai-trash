@@ -175,7 +175,7 @@ function _AiTrash-AddManifestEntry {
 # ─── Recycle Bin availability helpers ─────────────────────────────────────────
 
 # Returns $true if the Windows Recycle Bin is available for the given path.
-# $false means SendToRecycleBin will silently permanently delete — use legacy fallback instead.
+# $false means SendToRecycleBin will silently permanently delete — the file is deleted with a warning.
 function _AiTrash-IsBinAvailable {
     param([string]$Path)
     # Network paths (UNC or mapped network drive): SHFileOperation with FOF_ALLOWUNDO
@@ -226,114 +226,6 @@ function _AiTrash-ConfirmInRecycleBin {
         }
         return $false
     } catch { return $true }  # optimistic on error — avoid false "permanently deleted" warnings
-}
-
-# ─── Metadata helpers (legacy folder) ─────────────────────────────────────────
-
-# Detect whether the volume hosting $Path uses NTFS.
-function _AiTrash-IsNtfs {
-    param([string]$Path)
-    try {
-        $root = [System.IO.Path]::GetPathRoot($Path)
-        $drive = Get-PSDrive -Name ($root.TrimEnd(':\')) -ErrorAction SilentlyContinue
-        if ($null -ne $drive -and $drive.Provider.Name -eq 'FileSystem') {
-            $vol = Get-Volume -DriveLetter ($root[0]) -ErrorAction SilentlyContinue
-            if ($null -ne $vol) {
-                return ($vol.FileSystemType -eq 'NTFS')
-            }
-        }
-    } catch { }
-    # Default to assuming NTFS on Windows when we cannot determine.
-    return $true
-}
-
-function _AiTrash-WriteMeta {
-    param(
-        [string]$DestPath,
-        [string]$OriginalPath,
-        [string]$DeletedAt,
-        [string]$DeletedBy,
-        [string]$DeletedByProcess,
-        [string]$OriginalSize
-    )
-
-    $useAds = _AiTrash-IsNtfs -Path $DestPath
-
-    if ($useAds) {
-        try {
-            Set-Content -LiteralPath $DestPath -Stream 'ai-trash.original-path'      -Value $OriginalPath     -Encoding UTF8 -ErrorAction Stop
-            Set-Content -LiteralPath $DestPath -Stream 'ai-trash.deleted-at'         -Value $DeletedAt        -Encoding UTF8 -ErrorAction Stop
-            Set-Content -LiteralPath $DestPath -Stream 'ai-trash.deleted-by'         -Value $DeletedBy        -Encoding UTF8 -ErrorAction Stop
-            Set-Content -LiteralPath $DestPath -Stream 'ai-trash.deleted-by-process' -Value $DeletedByProcess -Encoding UTF8 -ErrorAction Stop
-            if ($OriginalSize) {
-                Set-Content -LiteralPath $DestPath -Stream 'ai-trash.original-size'  -Value $OriginalSize     -Encoding UTF8 -ErrorAction Stop
-            }
-            return
-        } catch {
-            # Fall through to sidecar on ADS write failure.
-        }
-    }
-
-    # Sidecar JSON fallback (non-NTFS volumes, e.g. FAT32 USB drives).
-    $sidecar = Join-Path (Split-Path $DestPath -Parent) ('.' + (Split-Path $DestPath -Leaf) + '.ai-trash')
-    $meta = [ordered]@{
-        'original-path'      = $OriginalPath
-        'deleted-at'         = $DeletedAt
-        'deleted-by'         = $DeletedBy
-        'deleted-by-process' = $DeletedByProcess
-        'original-size'      = $OriginalSize
-    }
-    try {
-        $meta | ConvertTo-Json | Set-Content -LiteralPath $sidecar -Encoding UTF8 -ErrorAction Stop
-    } catch { }
-}
-
-# ─── Trash directory helpers ───────────────────────────────────────────────────
-
-$_AiTrashDir        = "$env:USERPROFILE\.Trash\ai-trash"
-$_AiTrashSystemDir  = "$env:USERPROFILE\.Trash"
-
-function _AiTrash-GetTrashDir {
-    param([string]$FilePath)
-    # On Windows there is only one concept of "boot volume" for user files.
-    # Use the per-drive .Recycle.Bin convention for other volumes.
-    try {
-        $fileRoot = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($FilePath))
-        $homeRoot = [System.IO.Path]::GetPathRoot([System.IO.Path]::GetFullPath($env:USERPROFILE))
-        if ($fileRoot -ieq $homeRoot) {
-            return $script:_AiTrashDir
-        } else {
-            $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-            return "${fileRoot}`$Recycle.Bin\$sid\ai-trash"
-        }
-    } catch {
-        return $script:_AiTrashDir
-    }
-}
-
-function _AiTrash-GetUniqueTrashPath {
-    param(
-        [string]$TrashDir,
-        [string]$Name
-    )
-    # Finder-style collision renaming: foo.txt -> foo (2).txt -> foo (3).txt
-    # Hidden files (.bashrc) have no extension.
-    if ($Name.StartsWith('.')) {
-        $stem = $Name; $ext = ''
-    } elseif ($Name.Contains('.')) {
-        $ext  = '.' + $Name.Split('.')[-1]
-        $stem = $Name.Substring(0, $Name.Length - $ext.Length)
-    } else {
-        $stem = $Name; $ext = ''
-    }
-
-    $candidate = Join-Path $TrashDir $Name
-    $i = 2
-    while (Test-Path -LiteralPath $candidate) {
-        $candidate = Join-Path $TrashDir "$stem ($i)$ext"
-        $i++
-    }
-    return $candidate
 }
 
 # ─── Move to system Recycle Bin (safe mode, non-AI calls) ─────────────────────
@@ -454,41 +346,16 @@ function _AiTrash-MoveToAiTrash {
             continue
         }
 
-        # Fallback: move to legacy custom folder (cross-volume, permissions failure, etc.).
-        $trashDir = _AiTrash-GetTrashDir -FilePath $f
-
+        # Bin not available (network path, policy) or SendToRecycleBin threw unexpectedly.
+        # Permanently delete with a warning — no recovery possible.
+        Write-Warning "Remove-Item: '$f' cannot be sent to the Recycle Bin. Deleting permanently."
         try {
-            $null = New-Item -ItemType Directory -Path $trashDir -Force -ErrorAction Stop
+            Microsoft.PowerShell.Management\Remove-Item -LiteralPath $f -Recurse -Force -ErrorAction Stop
+            if ($Verbose) { Write-Host $f }
         } catch {
-            Write-Warning "Remove-Item: trash unavailable for '$f', deleting permanently"
-            Microsoft.PowerShell.Management\Remove-Item -LiteralPath $f -Recurse -Force -ErrorAction SilentlyContinue
-            continue
-        }
-
-        $destPath = _AiTrash-GetUniqueTrashPath -TrashDir $trashDir -Name (Split-Path $f -Leaf)
-
-        try {
-            Move-Item -LiteralPath $f -Destination $destPath -ErrorAction Stop
-        } catch {
-            Write-Error "Remove-Item: could not move '$f' to ai-trash: $_"
+            Write-Error "Remove-Item: could not delete '$f': $_"
             $result = 1
-            continue
         }
-
-        if ($Verbose) { Write-Host $f }
-
-        _AiTrash-WriteMeta `
-            -DestPath         $destPath `
-            -OriginalPath     $absPath `
-            -DeletedAt        $deletedAt `
-            -DeletedBy        $deletedBy `
-            -DeletedByProcess $deletedByProcess `
-            -OriginalSize     $origSize
-
-        # Touch the mtime so 30-day cleanup uses trash-time, not original mtime.
-        try {
-            (Get-Item -LiteralPath $destPath -ErrorAction Stop).LastWriteTimeUtc = [DateTime]::UtcNow
-        } catch { }
     }
     return $result
 }

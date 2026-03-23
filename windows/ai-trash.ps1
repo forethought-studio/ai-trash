@@ -20,7 +20,6 @@ $ErrorActionPreference = 'Stop'
 # Load shared Recycle Bin helpers (_FindInRecycleBin, _GetIFile).
 . "$PSScriptRoot\_recycle-bin.ps1"
 
-$TRASH_DIR     = "$env:USERPROFILE\.Trash\ai-trash"
 $MANIFEST_PATH = "$env:USERPROFILE\.config\ai-trash\manifest.json"
 $PROG          = 'ai-trash'
 $VERSION       = '1.2.0'
@@ -83,56 +82,13 @@ function _WriteManifest {
     } catch { }
 }
 
-# ─── Legacy metadata helper ────────────────────────────────────────────────────
-
-function _ReadMeta {
-    param([string]$ItemPath, [string]$Key)
-
-    # Try NTFS ADS first.
-    try {
-        $val = Get-Content -LiteralPath $ItemPath -Stream "ai-trash.$Key" -ErrorAction Stop
-        return ($val -join '').Trim()
-    } catch { }
-
-    # Fall back to sidecar JSON.
-    $sidecar = Join-Path (Split-Path $ItemPath -Parent) ('.' + (Split-Path $ItemPath -Leaf) + '.ai-trash')
-    if (Test-Path -LiteralPath $sidecar) {
-        try {
-            $obj = Get-Content -LiteralPath $sidecar -Raw -Encoding UTF8 | ConvertFrom-Json
-            return $obj.$Key
-        } catch { }
-    }
-
-    return $null
-}
-
 # ─── status ────────────────────────────────────────────────────────────────────
 
 function Cmd-Status {
-    # Load and reconcile manifest entries (Recycle Bin items).
-    $manifest    = _ReadManifest
-    $validEntries = [System.Collections.Generic.List[object]]::new()
-    $pruned      = $false
-
-    if ($manifest.Count -gt 0) {
-        foreach ($entry in $manifest) {
-            if ($null -ne (_FindInRecycleBin -OriginalPath $entry.'original-path')) {
-                $validEntries.Add($entry)
-            } else {
-                $pruned = $true
-            }
-        }
-        if ($pruned) { _WriteManifest -Entries $validEntries }
-    }
-
-    # Load legacy items (files in custom folder).
-    $legacyItems = @()
-    if (Test-Path -LiteralPath $TRASH_DIR) {
-        $legacyItems = @(Get-ChildItem -LiteralPath $TRASH_DIR -ErrorAction SilentlyContinue |
-                         Where-Object { $_.Name -notlike '.*' })
-    }
-
-    $totalCount = $validEntries.Count + $legacyItems.Count
+    # Read manifest directly — no reconciliation so the command has no side effects.
+    # Stale entries (bin emptied externally) will surface when the user runs 'list'.
+    $manifest   = _ReadManifest
+    $totalCount = $manifest.Count
     if ($totalCount -eq 0) {
         Write-Host 'AI trash is empty.'
         return
@@ -144,8 +100,7 @@ function Cmd-Status {
     $newestTime = $null
     $newestName = ''
 
-    # Aggregate manifest entries.
-    foreach ($entry in $validEntries) {
+    foreach ($entry in $manifest) {
         $rawSize = $entry.'original-size'
         if ($rawSize -match '^\d+$') { $totalBytes += [long]$rawSize }
         $deletedAt = $entry.'deleted-at'
@@ -155,20 +110,6 @@ function Cmd-Status {
                 $name = Split-Path $entry.'original-path' -Leaf
                 if ($null -eq $oldestTime -or $dt -lt $oldestTime) { $oldestTime = $dt; $oldestName = $name }
                 if ($null -eq $newestTime -or $dt -gt $newestTime) { $newestTime = $dt; $newestName = $name }
-            }
-        }
-    }
-
-    # Aggregate legacy items.
-    foreach ($item in $legacyItems) {
-        $rawSize   = _ReadMeta -ItemPath $item.FullName -Key 'original-size'
-        $deletedAt = _ReadMeta -ItemPath $item.FullName -Key 'deleted-at'
-        if ($rawSize -match '^\d+$') { $totalBytes += [long]$rawSize }
-        if ($deletedAt) {
-            try { $dt = [DateTime]::Parse($deletedAt) } catch { $dt = $null }
-            if ($dt) {
-                if ($null -eq $oldestTime -or $dt -lt $oldestTime) { $oldestTime = $dt; $oldestName = $item.Name }
-                if ($null -eq $newestTime -or $dt -gt $newestTime) { $newestTime = $dt; $newestName = $item.Name }
             }
         }
     }
@@ -183,37 +124,26 @@ function Cmd-Status {
     if ($newestName) {
         Write-Host ('Newest:   {0} ({1})' -f $newestName, $newestTime.ToString('yyyy-MM-dd'))
     }
-    Write-Host ('Location: Recycle Bin + {0}' -f $TRASH_DIR)
+    Write-Host 'Location: Windows Recycle Bin'
 }
 
 # ─── list ──────────────────────────────────────────────────────────────────────
 
 function Cmd-List {
-    # Load and reconcile manifest entries (Recycle Bin items).
     $manifest     = _ReadManifest
     $validEntries = [System.Collections.Generic.List[object]]::new()
-    $pruned       = $false
+    $goneEntries  = [System.Collections.Generic.List[object]]::new()
 
-    if ($manifest.Count -gt 0) {
-        foreach ($entry in $manifest) {
-            if ($null -ne (_FindInRecycleBin -OriginalPath $entry.'original-path')) {
-                $validEntries.Add($entry)
-            } else {
-                $pruned = $true
-            }
+    foreach ($entry in $manifest) {
+        if ($null -ne (_FindInRecycleBin -OriginalPath $entry.'original-path')) {
+            $validEntries.Add($entry)
+        } else {
+            $goneEntries.Add($entry)
         }
-        if ($pruned) { _WriteManifest -Entries $validEntries }
     }
+    if ($goneEntries.Count -gt 0) { _WriteManifest -Entries $validEntries }
 
-    # Load legacy items.
-    $legacyItems = @()
-    if (Test-Path -LiteralPath $TRASH_DIR) {
-        $legacyItems = @(Get-ChildItem -LiteralPath $TRASH_DIR -ErrorAction SilentlyContinue |
-                         Where-Object { $_.Name -notlike '.*' } |
-                         Sort-Object Name)
-    }
-
-    $totalCount = $validEntries.Count + $legacyItems.Count
+    $totalCount = $validEntries.Count + $goneEntries.Count
     if ($totalCount -eq 0) {
         Write-Host 'AI trash is empty.'
         return
@@ -229,49 +159,50 @@ function Cmd-List {
     Write-Host $hdr
     Write-Host $sep
 
-    # Display manifest (Recycle Bin) entries.
+    # Restorable entries (confirmed in Recycle Bin).
     foreach ($entry in ($validEntries | Sort-Object { $_.'deleted-at' })) {
-        $origPath  = $entry.'original-path'
-        $deletedAt = $entry.'deleted-at'
-        $deletedBy = $entry.'deleted-by'
+        $origPath    = $entry.'original-path'
+        $deletedAt   = $entry.'deleted-at'
+        $deletedBy   = $entry.'deleted-by'
         $deletedProc = $entry.'deleted-by-process'
-        $rawSize   = $entry.'original-size'
-        $name      = Split-Path $origPath -Leaf
+        $rawSize     = $entry.'original-size'
+        $name        = Split-Path $origPath -Leaf
 
-        if ($deletedAt) { $deletedAt = $deletedAt -replace 'T', ' ' -replace 'Z$', '' }
+        if ($deletedAt)  { $deletedAt = $deletedAt -replace 'T', ' ' -replace 'Z$', '' }
         if ($rawSize -match '^\d+$') { $sizeStr = _FmtSize ([long]$rawSize) } else { $sizeStr = '-' }
-        if (-not $origPath)   { $origPath  = '(unknown)' }
-        if (-not $deletedAt)  { $deletedAt = '(unknown)' }
-        if (-not $deletedBy)  { $deletedBy = '-' }
+        if (-not $origPath)  { $origPath  = '(unknown)' }
+        if (-not $deletedAt) { $deletedAt = '(unknown)' }
+        if (-not $deletedBy) { $deletedBy = '-' }
         if ($deletedProc -and $deletedProc -ne $deletedBy) { $deletedBy = "$deletedBy ($deletedProc)" }
         if ($origPath.Length -gt $pathWidth) { $origPath = '...' + $origPath.Substring($origPath.Length - ($pathWidth - 3)) }
 
         Write-Host ('{0,-36}  {1,-20}  {2,-5}  {3,-10}  {4}' -f $name, $deletedAt, $sizeStr, $deletedBy, $origPath)
     }
 
-    # Display legacy folder entries.
-    foreach ($item in $legacyItems) {
-        $origPath    = _ReadMeta -ItemPath $item.FullName -Key 'original-path'
-        $deletedAt   = _ReadMeta -ItemPath $item.FullName -Key 'deleted-at'
-        $deletedBy   = _ReadMeta -ItemPath $item.FullName -Key 'deleted-by'
-        $deletedProc = _ReadMeta -ItemPath $item.FullName -Key 'deleted-by-process'
-        $rawSize     = _ReadMeta -ItemPath $item.FullName -Key 'original-size'
+    # Gone entries (no longer in Recycle Bin) — shown in red at the bottom.
+    foreach ($entry in ($goneEntries | Sort-Object { $_.'deleted-at' })) {
+        $origPath    = $entry.'original-path'
+        $deletedAt   = $entry.'deleted-at'
+        $deletedBy   = $entry.'deleted-by'
+        $deletedProc = $entry.'deleted-by-process'
+        $name        = Split-Path $origPath -Leaf
 
-        if ($deletedAt) { $deletedAt = $deletedAt -replace 'T', ' ' -replace 'Z$', '' }
-        if ($rawSize -match '^\d+$') { $sizeStr = _FmtSize ([long]$rawSize) }
-        elseif ($item.PSIsContainer) { $sizeStr = 'dir' }
-        else                         { $sizeStr = '-' }
-        if (-not $origPath)   { $origPath  = '(unknown)' }
-        if (-not $deletedAt)  { $deletedAt = '(unknown)' }
-        if (-not $deletedBy)  { $deletedBy = '-' }
+        if ($deletedAt)  { $deletedAt = $deletedAt -replace 'T', ' ' -replace 'Z$', '' }
+        if (-not $origPath)  { $origPath  = '(unknown)' }
+        if (-not $deletedAt) { $deletedAt = '(unknown)' }
+        if (-not $deletedBy) { $deletedBy = '-' }
         if ($deletedProc -and $deletedProc -ne $deletedBy) { $deletedBy = "$deletedBy ($deletedProc)" }
         if ($origPath.Length -gt $pathWidth) { $origPath = '...' + $origPath.Substring($origPath.Length - ($pathWidth - 3)) }
 
-        Write-Host ('{0,-36}  {1,-20}  {2,-5}  {3,-10}  {4}' -f $item.Name, $deletedAt, $sizeStr, $deletedBy, $origPath)
+        Write-Host ('{0,-36}  {1,-20}  {2,-5}  {3,-10}  {4}' -f $name, $deletedAt, 'GONE', $deletedBy, $origPath) -ForegroundColor Red
     }
 
     Write-Host ''
-    Write-Host "$totalCount item(s) in AI trash"
+    $footer = "$totalCount item(s) in AI trash"
+    if ($goneEntries.Count -gt 0) {
+        $footer += "  ($($goneEntries.Count) no longer in Recycle Bin — removed from tracking)"
+    }
+    Write-Host $footer
 }
 
 # ─── restore ───────────────────────────────────────────────────────────────────
@@ -337,52 +268,11 @@ function Cmd-Restore {
         Write-Warning "$PROG`: '$target' is no longer in the Recycle Bin and cannot be restored from it."
         $remaining = @($manifest | Where-Object { $_ -ne $entry })
         _WriteManifest -Entries $remaining
-    }
-
-    # ── Fall through to legacy folder ─────────────────────────────────────────
-    $candidateInTrash = Join-Path $TRASH_DIR $target
-    if (Test-Path -LiteralPath $candidateInTrash) {
-        $itemPath = $candidateInTrash
-    } elseif (Test-Path -LiteralPath $target) {
-        $itemPath = $target
-    } else {
-        Write-Error "$PROG`: '$target' not found in AI trash"
         exit 1
     }
 
-    $origPath = _ReadMeta -ItemPath $itemPath -Key 'original-path'
-    if (-not $origPath) {
-        Write-Error "$PROG`: no original path recorded for '$(Split-Path $itemPath -Leaf)'"
-        exit 1
-    }
-
-    if (Test-Path -LiteralPath $origPath) {
-        $response = Read-Host "$PROG`: '$origPath' already exists. Overwrite? [y/N]"
-        if ($response -notmatch '^[Yy]') {
-            Write-Host 'aborted.'
-            exit 0
-        }
-    }
-
-    $parentDir = Split-Path $origPath -Parent
-    if (-not (Test-Path -LiteralPath $parentDir)) {
-        $null = New-Item -ItemType Directory -Path $parentDir -Force
-    }
-
-    try {
-        Move-Item -LiteralPath $itemPath -Destination $origPath -Force -ErrorAction Stop
-
-        # Remove sidecar JSON if present (non-NTFS fallback).
-        $sidecar = Join-Path (Split-Path $itemPath -Parent) ('.' + (Split-Path $itemPath -Leaf) + '.ai-trash')
-        if (Test-Path -LiteralPath $sidecar) {
-            Microsoft.PowerShell.Management\Remove-Item -LiteralPath $sidecar -Force -ErrorAction SilentlyContinue
-        }
-
-        Write-Host "restored -> $origPath"
-    } catch {
-        Write-Error "$PROG`: failed to restore '$(Split-Path $itemPath -Leaf)': $_"
-        exit 1
-    }
+    Write-Error "$PROG`: '$target' not found in AI trash"
+    exit 1
 }
 
 # ─── empty ─────────────────────────────────────────────────────────────────────
@@ -432,20 +322,7 @@ function Cmd-Empty {
         $toDelete.AddRange($manifest)
     }
 
-    # ── Collect legacy folder items to delete ─────────────────────────────────
-    $legacyToDelete = @()
-    if (Test-Path -LiteralPath $TRASH_DIR) {
-        $allLegacy = @(Get-ChildItem -LiteralPath $TRASH_DIR -ErrorAction SilentlyContinue |
-                       Where-Object { $_.Name -notlike '.*' })
-        if ($null -ne $olderThan) {
-            $cutoff         = (Get-Date).AddDays(-$olderThan)
-            $legacyToDelete = $allLegacy | Where-Object { $_.LastWriteTime -lt $cutoff }
-        } else {
-            $legacyToDelete = $allLegacy
-        }
-    }
-
-    $totalCount = $toDelete.Count + @($legacyToDelete).Count
+    $totalCount = $toDelete.Count
     if ($totalCount -eq 0) {
         Write-Host 'No items to delete.'
         return
@@ -475,16 +352,6 @@ function Cmd-Empty {
         }
     }
     _WriteManifest -Entries $toKeep
-
-    # Delete legacy folder items.
-    foreach ($item in $legacyToDelete) {
-        Microsoft.PowerShell.Management\Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction SilentlyContinue
-        $sidecar = Join-Path (Split-Path $item.FullName -Parent) ('.' + $item.Name + '.ai-trash')
-        if (Test-Path -LiteralPath $sidecar) {
-            Microsoft.PowerShell.Management\Remove-Item -LiteralPath $sidecar -Force -ErrorAction SilentlyContinue
-        }
-    }
-
     Write-Host "deleted $totalCount item(s)."
 }
 

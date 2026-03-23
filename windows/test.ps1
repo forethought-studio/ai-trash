@@ -19,11 +19,10 @@ function _Section { param([string]$msg) Write-Host ""; Write-Host "── $msg �
 $RepoDir  = Split-Path $PSScriptRoot -Parent
 $WorkDir  = Join-Path $env:USERPROFILE "ai-trash-test-$PID"
 $TestHome = Join-Path $WorkDir "home"
-$TrashDir = Join-Path $TestHome ".Trash\ai-trash"
 $ConfDir  = Join-Path $TestHome ".config\ai-trash"
 $ManifestPath = Join-Path $ConfDir "manifest.json"
 
-New-Item -ItemType Directory -Force -Path $WorkDir, $TestHome, $TrashDir, $ConfDir | Out-Null
+New-Item -ItemType Directory -Force -Path $WorkDir, $TestHome, $ConfDir | Out-Null
 
 # Override USERPROFILE so rm_wrapper and ai-trash use our isolated home
 $env:USERPROFILE = $TestHome
@@ -32,8 +31,7 @@ $env:USERPROFILE = $TestHome
 # All $script: variables it sets live here, and Remove-Item overrides this session.
 . "$RepoDir\windows\rm_wrapper.ps1"
 
-# Override trash dir and mode for tests (these $script: vars are now in this scope)
-$script:_AiTrashDir      = $TrashDir
+# Override mode for tests (these $script: vars are now in this scope)
 $script:_AiTrashMode     = 'always'
 $script:_AiTrashManifestPath = $ManifestPath
 
@@ -218,25 +216,6 @@ try {
     Remove-Item -LiteralPath (Join-Path $WorkDir "does-not-exist.txt")
     _Fail "missing file without -Force should have thrown"
 } catch { _Pass "missing file without -Force throws as expected" }
-
-_Section "rm_wrapper: legacy folder fallback — items appear in list"
-# Manually place a file in the legacy folder with metadata to simulate a legacy item.
-$legacyFile = Join-Path $TrashDir "legacy-test.txt"
-"legacy content" | Set-Content $legacyFile
-Set-Content -LiteralPath $legacyFile -Stream 'ai-trash.original-path' -Value (Join-Path $WorkDir "legacy-test.txt") -Encoding UTF8
-Set-Content -LiteralPath $legacyFile -Stream 'ai-trash.deleted-at'    -Value '2026-01-01T00:00:00Z' -Encoding UTF8
-Set-Content -LiteralPath $legacyFile -Stream 'ai-trash.deleted-by'    -Value 'testuser' -Encoding UTF8
-$out = (_AiTrash @('list')) -join "`n"
-if ($out -match 'legacy-test\.txt') { _Pass "legacy: item appears in list" }
-else { _Fail "legacy: item not shown in list. Output: $out" }
-
-_Section "rm_wrapper: legacy folder fallback — restore works"
-$legacyOrig = Join-Path $WorkDir "legacy-test.txt"
-$out = (_AiTrash @('restore', 'legacy-test.txt')) -join "`n"
-if (Test-Path $legacyOrig) {
-    _Pass "legacy: restore from legacy folder works"
-    Microsoft.PowerShell.Management\Remove-Item -LiteralPath $legacyOrig -Force -EA SilentlyContinue
-} else { _Fail "legacy: restore from legacy folder failed. Output: $out" }
 
 _Section "ai-trash-cleanup.ps1: old entries purged from manifest and Recycle Bin"
 # Delete a file so it lands in the bin + manifest.
