@@ -105,6 +105,63 @@ _is_ai_process() {
   return 1
 }
 
+# ─── Identify the AI process that triggered this deletion ─────────────
+# Walks the process tree (like _is_ai_process) and prints the full command
+# line of the first matched AI ancestor. Falls back to the immediate parent.
+_detect_ai_process_command() {
+  # Check env-var tier first — if matched, the parent is the calling shell,
+  # so walk up to grandparent for a more useful label.
+  local var val env_check
+  for env_check in "${AI_ENV_VARS[@]}"; do
+    var="${env_check%%=*}"
+    val="${env_check#*=}"
+    if [[ "${!var:-}" == "$val" ]]; then
+      # Return the env var match as the identifier (e.g. "cursor" from TERM_PROGRAM=cursor)
+      printf '%s' "$val"
+      return
+    fi
+  done
+
+  # Walk the process tree looking for the AI ancestor.
+  local ps_tree
+  ps_tree=$(ps -A -o pid=,ppid=,comm= 2>/dev/null) || { ps -p $PPID -o comm= 2>/dev/null; return; }
+
+  local pid=$$
+  while true; do
+    local line ppid comm
+    line=$(echo "$ps_tree" | awk -v p="$pid" '$1+0==p+0{print; exit}')
+    [[ -z "$line" ]] && break
+
+    ppid=$(echo "$line" | awk '{print $2+0}')
+    comm=$(echo "$line" | awk '{print $3}')
+
+    for proc in "${AI_PROCESSES[@]}"; do
+      if [[ "$comm" == "$proc" ]]; then
+        # Found the AI process — print its full command line
+        ps -p "$pid" -o command= 2>/dev/null | sed 's/^ *//'
+        return
+      fi
+    done
+
+    if [[ ${#AI_PROCESS_ARGS[@]} -gt 0 ]]; then
+      local args pattern
+      args=$(ps -p "$pid" -o args= 2>/dev/null || true)
+      for pattern in "${AI_PROCESS_ARGS[@]}"; do
+        if [[ "$args" == *"$pattern"* ]]; then
+          printf '%s' "$args" | sed 's/^ *//'
+          return
+        fi
+      done
+    fi
+
+    [[ "$ppid" -le 1 || "$ppid" == "$pid" ]] && break
+    pid="$ppid"
+  done
+
+  # No AI process found — fall back to immediate parent command
+  ps -p $PPID -o comm= 2>/dev/null | sed 's/^ *//'
+}
+
 # ─── Platform helpers ──────────────────────────────────────────────────
 _stat_dev()  { [[ "$PLATFORM" == "Darwin" ]] && stat -f %d "$1" 2>/dev/null || stat -c %d "$1" 2>/dev/null; }
 _stat_size() { [[ "$PLATFORM" == "Darwin" ]] && stat -f %z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null; }
@@ -313,7 +370,7 @@ move_to_ai_trash() {
   local deleted_at deleted_by deleted_proc
   deleted_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   deleted_by=$(id -un)
-  deleted_proc=$(ps -p $PPID -o comm= 2>/dev/null | sed 's|.*/||')
+  deleted_proc=$(_detect_ai_process_command)
 
   # ── macOS: route boot-volume files through FSMoveObjectToTrashSync for Put Back ──
   if [[ "$PLATFORM" == "Darwin" ]]; then

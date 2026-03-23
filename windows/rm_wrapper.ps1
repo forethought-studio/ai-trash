@@ -276,13 +276,59 @@ function _AiTrash-MoveToAiTrash {
             $absPath = $f
         }
 
-        # Determine the deleting process name by walking up from parent.
+        # Identify the AI ancestor process and store its full command line.
         $deletedByProcess = ''
         try {
-            $parentProc = Get-Process -Id (
-                (Get-CimInstance Win32_Process -Filter "ProcessId=$PID" -ErrorAction Stop).ParentProcessId
-            ) -ErrorAction Stop
-            $deletedByProcess = [System.IO.Path]::GetFileNameWithoutExtension($parentProc.Name)
+            $allProcs = Get-CimInstance -ClassName Win32_Process -ErrorAction Stop |
+                        Select-Object -Property ProcessId, ParentProcessId, Name, CommandLine
+            $pm = @{}; foreach ($p in $allProcs) { $pm[$p.ProcessId] = $p }
+
+            $cpid = $PID
+            $vis  = [System.Collections.Generic.HashSet[int]]::new()
+            while ($true) {
+                if (-not $vis.Add($cpid)) { break }
+                $pr = $pm[$cpid]; if ($null -eq $pr) { break }
+                $pn = [System.IO.Path]::GetFileNameWithoutExtension($pr.Name)
+
+                foreach ($ai in $script:_AiTrashAiProcesses) {
+                    if ($pn -eq $ai) {
+                        $deletedByProcess = if ($pr.CommandLine) { $pr.CommandLine } else { $pr.Name }
+                        break
+                    }
+                }
+                if ($deletedByProcess) { break }
+
+                if ($null -ne $pr.CommandLine -and $script:_AiTrashAiProcessArgs.Count -gt 0) {
+                    foreach ($pat in $script:_AiTrashAiProcessArgs) {
+                        if ($pr.CommandLine -like "*$pat*") {
+                            $deletedByProcess = $pr.CommandLine
+                            break
+                        }
+                    }
+                }
+                if ($deletedByProcess) { break }
+
+                $ppid = $pr.ParentProcessId
+                if ($ppid -le 1 -or $ppid -eq $cpid) { break }
+                $cpid = $ppid
+            }
+
+            # Env-var match fallback: store the matched value (e.g. "cursor")
+            if (-not $deletedByProcess) {
+                foreach ($entry in $script:_AiTrashAiEnvVars) {
+                    $parts = $entry -split '=', 2
+                    if ($parts.Count -eq 2) {
+                        $actual = [System.Environment]::GetEnvironmentVariable($parts[0])
+                        if ($actual -eq $parts[1]) { $deletedByProcess = $parts[1]; break }
+                    }
+                }
+            }
+
+            # Last resort: immediate parent name
+            if (-not $deletedByProcess) {
+                $parentProc = $pm[(Get-CimInstance Win32_Process -Filter "ProcessId=$PID" -ErrorAction Stop).ParentProcessId]
+                if ($parentProc) { $deletedByProcess = if ($parentProc.CommandLine) { $parentProc.CommandLine } else { $parentProc.Name } }
+            }
         } catch { }
 
         $deletedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
