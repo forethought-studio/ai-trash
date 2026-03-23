@@ -396,7 +396,15 @@ function Remove-Item {
 
     process {
         if ($LiteralPath) {
-            foreach ($lp in $LiteralPath) { $allPaths.Add($lp) }
+            foreach ($lp in $LiteralPath) {
+                # Pipeline input from Get-Item binds PSPath to LiteralPath, which includes a
+                # provider qualifier: "Microsoft.PowerShell.Core\FileSystem::C:\path\to\file".
+                # Resolve-Path strips the qualifier; fall back to the raw value for missing paths
+                # (e.g. Remove-Item -Force on a non-existent file).
+                $rp = $null
+                try { $rp = Resolve-Path -LiteralPath $lp -ErrorAction SilentlyContinue } catch {}
+                $allPaths.Add($(if ($rp) { $rp.ProviderPath } else { $lp }))
+            }
         } elseif ($Path) {
             foreach ($p in $Path) {
                 # Expand wildcards the same way the real cmdlet would.
