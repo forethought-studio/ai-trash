@@ -50,7 +50,12 @@ function _ReadManifest {
     if (-not (Test-Path -LiteralPath $MANIFEST_PATH)) { return @() }
     try {
         $json    = Get-Content -LiteralPath $MANIFEST_PATH -Raw -Encoding UTF8 -ErrorAction Stop
-        $entries = $json | ConvertFrom-Json
+        # Use -AsHashtable on PS6+ to prevent ISO 8601 dates from auto-converting to DateTime.
+        if ($PSVersionTable.PSVersion.Major -ge 6) {
+            $entries = $json | ConvertFrom-Json -AsHashtable
+        } else {
+            $entries = $json | ConvertFrom-Json
+        }
         if ($null -eq $entries) { return @() }
         return @($entries)
     } catch { return @() }
@@ -79,6 +84,7 @@ function _WriteManifest {
 
 function _FindInRecycleBin {
     param([string]$OriginalPath)
+    # Try COM Shell.Application first (works in interactive sessions).
     try {
         $shell = New-Object -ComObject Shell.Application
         $bin   = $shell.Namespace(10)
@@ -89,6 +95,33 @@ function _FindInRecycleBin {
             if ($full -ieq $OriginalPath) { return $item }
         }
     } catch { }
+
+    # Fallback: scan $RECYCLE.BIN\<SID> directly (headless/server environments).
+    # $I file format: [int64 version][int64 size][int64 FILETIME][int32 pathLen (v2 only)][UTF-16LE path]
+    try {
+        $sid    = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        $root   = [System.IO.Path]::GetPathRoot($OriginalPath)
+        $binDir = Join-Path $root "`$RECYCLE.BIN\$sid"
+        if (Test-Path -LiteralPath $binDir) {
+            $iFiles = Get-ChildItem -LiteralPath $binDir -Filter '$I*' -Force -ErrorAction SilentlyContinue
+            foreach ($iFile in $iFiles) {
+                try {
+                    $bytes = [System.IO.File]::ReadAllBytes($iFile.FullName)
+                    if ($bytes.Length -lt 28) { continue }
+                    $version   = [System.BitConverter]::ToInt64($bytes, 0)
+                    $pathStart = if ($version -ge 2) { 28 } else { 24 }
+                    $pathBytes = $bytes[$pathStart..($bytes.Length - 1)]
+                    $path      = [System.Text.Encoding]::Unicode.GetString($pathBytes).TrimEnd([char]0)
+                    if ($path -ieq $OriginalPath) {
+                        $rLeaf = '$R' + $iFile.Name.Substring(2)
+                        $rPath = Join-Path $binDir $rLeaf
+                        return [PSCustomObject]@{ Path = $rPath }
+                    }
+                } catch { }
+            }
+        }
+    } catch { }
+
     return $null
 }
 
@@ -133,20 +166,12 @@ function Cmd-Status {
     $pruned      = $false
 
     if ($manifest.Count -gt 0) {
-        $shell = New-Object -ComObject Shell.Application
-        $bin   = $shell.Namespace(10)
-        $binItems = @($bin.Items())
-
         foreach ($entry in $manifest) {
-            $found = $false
-            foreach ($bi in $binItems) {
-                $from = $bi.ExtendedProperty('System.Recycle.DeletedFrom')
-                if ([string]::IsNullOrEmpty($from)) { continue }
-                $full = Join-Path $from $bi.Name
-                if ($full -ieq $entry.'original-path') { $found = $true; break }
+            if ($null -ne (_FindInRecycleBin -OriginalPath $entry.'original-path')) {
+                $validEntries.Add($entry)
+            } else {
+                $pruned = $true
             }
-            if ($found) { $validEntries.Add($entry) }
-            else        { $pruned = $true }
         }
         if ($pruned) { _WriteManifest -Entries $validEntries }
     }
@@ -221,20 +246,12 @@ function Cmd-List {
     $pruned       = $false
 
     if ($manifest.Count -gt 0) {
-        $shell    = New-Object -ComObject Shell.Application
-        $bin      = $shell.Namespace(10)
-        $binItems = @($bin.Items())
-
         foreach ($entry in $manifest) {
-            $found = $false
-            foreach ($bi in $binItems) {
-                $from = $bi.ExtendedProperty('System.Recycle.DeletedFrom')
-                if ([string]::IsNullOrEmpty($from)) { continue }
-                $full = Join-Path $from $bi.Name
-                if ($full -ieq $entry.'original-path') { $found = $true; break }
+            if ($null -ne (_FindInRecycleBin -OriginalPath $entry.'original-path')) {
+                $validEntries.Add($entry)
+            } else {
+                $pruned = $true
             }
-            if ($found) { $validEntries.Add($entry) }
-            else        { $pruned = $true }
         }
         if ($pruned) { _WriteManifest -Entries $validEntries }
     }

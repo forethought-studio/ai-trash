@@ -121,7 +121,12 @@ function _AiTrash-ReadManifest {
     if (-not (Test-Path -LiteralPath $path)) { return @() }
     try {
         $json    = Get-Content -LiteralPath $path -Raw -Encoding UTF8 -ErrorAction Stop
-        $entries = $json | ConvertFrom-Json
+        # Use -AsHashtable on PS6+ to prevent ISO 8601 dates from auto-converting to DateTime.
+        if ($PSVersionTable.PSVersion.Major -ge 6) {
+            $entries = $json | ConvertFrom-Json -AsHashtable
+        } else {
+            $entries = $json | ConvertFrom-Json
+        }
         if ($null -eq $entries) { return @() }
         return @($entries)
     } catch { return @() }
@@ -155,7 +160,7 @@ function _AiTrash-AddManifestEntry {
         [string]$DeletedByProcess,
         [string]$OriginalSize
     )
-    $entries = _AiTrash-ReadManifest
+    $entries = @(_AiTrash-ReadManifest)
     $entry   = [ordered]@{
         'original-path'      = $OriginalPath
         'deleted-at'         = $DeletedAt
