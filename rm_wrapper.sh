@@ -293,13 +293,18 @@ PYEOF
 }
 
 # ─── Move files to system Trash (safe mode, non-AI calls) ──────────────
-# No xattrs — these weren't deleted by an AI tool and won't appear in
-# `ai-trash list`. Uses FSMoveObjectToTrashSync on macOS boot volume so
-# Finder writes ptbL/ptbN Put Back metadata automatically.
+# Writes ai-trash xattrs/sidecar metadata so the original path, deletion
+# time, and deleting process are always recoverable. Uses
+# FSMoveObjectToTrashSync on macOS boot volume for Finder Put Back support.
 move_to_system_trash() {
   local result=0
   local home_dev=""
   [[ "$PLATFORM" == "Darwin" ]] && home_dev=$(_stat_dev "$HOME")
+
+  local deleted_at deleted_by deleted_proc
+  deleted_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  deleted_by=$(id -un)
+  deleted_proc=$(_detect_ai_process_command)
 
   for f in "$@"; do
     if [[ ! -e "$f" && ! -L "$f" ]]; then
@@ -307,13 +312,18 @@ move_to_system_trash() {
       continue
     fi
 
+    local abs="" sz=""
+    abs=$(realpath "$f" 2>/dev/null || echo "$f")
+    [[ -f "$f" || -L "$f" ]] && sz=$(_stat_size "$f")
+
     # macOS boot-volume: use FSMoveObjectToTrashSync for Put Back support
     if [[ "$PLATFORM" == "Darwin" && "$(_stat_dev "$f")" == "$home_dev" ]]; then
-      local abs rp
-      abs=$(realpath "$f" 2>/dev/null || echo "$f")
+      local rp
       rp=$(_fsmove_single "$abs")
       if [[ -n "$rp" ]]; then
-        continue  # success — ptbL/ptbN written by FSMoveObjectToTrashSync
+        _write_meta "$rp" "$abs" "$deleted_at" "$deleted_by" "$deleted_proc" "$sz"
+        touch "$rp" 2>/dev/null
+        continue
       fi
       # fall through to mv on failure
     fi
@@ -329,7 +339,10 @@ move_to_system_trash() {
     fi
 
     dest=$(get_unique_trash_path "$trash_dir" "$(basename "$f")")
-    if ! mv "$f" "$dest"; then
+    if mv "$f" "$dest"; then
+      _write_meta "$dest" "$abs" "$deleted_at" "$deleted_by" "$deleted_proc" "$sz"
+      touch "$dest" 2>/dev/null
+    else
       echo "${REAL_CMD:-rm}: $f: could not move to trash" >&2
       result=1
     fi

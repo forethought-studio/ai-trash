@@ -229,9 +229,57 @@ function _AiTrash-ConfirmInRecycleBin {
 }
 
 # ─── Move to system Recycle Bin (safe mode, non-AI calls) ─────────────────────
+# Writes manifest metadata so the original path, deletion time, and deleting
+# process are always recoverable — even for non-AI deletions.
 
 function _AiTrash-MoveToRecycleBin {
     param([string[]]$Paths, [bool]$HasForce)
+
+    $deletedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    $deletedBy = $env:USERNAME
+
+    # Identify the deleting process (same tree-walk as _AiTrash-MoveToAiTrash).
+    $deletedByProcess = ''
+    try {
+        $allProcs = Get-CimInstance -ClassName Win32_Process -ErrorAction Stop |
+                    Select-Object -Property ProcessId, ParentProcessId, Name, CommandLine
+        $pm = @{}; foreach ($p in $allProcs) { $pm[$p.ProcessId] = $p }
+
+        $cpid = $PID
+        $vis  = [System.Collections.Generic.HashSet[int]]::new()
+        while ($true) {
+            if (-not $vis.Add($cpid)) { break }
+            $pr = $pm[$cpid]; if ($null -eq $pr) { break }
+            $pn = [System.IO.Path]::GetFileNameWithoutExtension($pr.Name)
+            foreach ($ai in $script:_AiTrashAiProcesses) {
+                if ($pn -eq $ai) { $deletedByProcess = if ($pr.CommandLine) { $pr.CommandLine } else { $pr.Name }; break }
+            }
+            if ($deletedByProcess) { break }
+            if ($null -ne $pr.CommandLine -and $script:_AiTrashAiProcessArgs.Count -gt 0) {
+                foreach ($pat in $script:_AiTrashAiProcessArgs) {
+                    if ($pr.CommandLine -like "*$pat*") { $deletedByProcess = $pr.CommandLine; break }
+                }
+            }
+            if ($deletedByProcess) { break }
+            $ppid = $pr.ParentProcessId
+            if ($ppid -le 1 -or $ppid -eq $cpid) { break }
+            $cpid = $ppid
+        }
+        if (-not $deletedByProcess) {
+            foreach ($entry in $script:_AiTrashAiEnvVars) {
+                $parts = $entry -split '=', 2
+                if ($parts.Count -eq 2) {
+                    $actual = [System.Environment]::GetEnvironmentVariable($parts[0])
+                    if ($actual -eq $parts[1]) { $deletedByProcess = $parts[1]; break }
+                }
+            }
+        }
+        if (-not $deletedByProcess) {
+            $parentProc = $pm[(Get-CimInstance Win32_Process -Filter "ProcessId=$PID" -ErrorAction Stop).ParentProcessId]
+            if ($parentProc) { $deletedByProcess = if ($parentProc.CommandLine) { $parentProc.CommandLine } else { $parentProc.Name } }
+        }
+    } catch { }
+
     $shell = New-Object -ComObject Shell.Application
     foreach ($f in $Paths) {
         if (-not (Test-Path -LiteralPath $f)) {
@@ -240,12 +288,26 @@ function _AiTrash-MoveToRecycleBin {
             }
             continue
         }
+
+        $origSize = ''
+        try {
+            $itemObj = Get-Item -LiteralPath $f -Force -ErrorAction Stop
+            if (-not $itemObj.PSIsContainer) { $origSize = $itemObj.Length.ToString() }
+        } catch { }
+
         try {
             $abs = [System.IO.Path]::GetFullPath($f)
             $folder = $shell.Namespace((Split-Path $abs -Parent))
             $item   = $folder.ParseName((Split-Path $abs -Leaf))
             if ($null -ne $item) {
                 $item.InvokeVerb('delete')
+                # Write manifest entry so the item is tracked and restorable via ai-trash.
+                _AiTrash-AddManifestEntry `
+                    -OriginalPath     $abs `
+                    -DeletedAt        $deletedAt `
+                    -DeletedBy        $deletedBy `
+                    -DeletedByProcess $deletedByProcess `
+                    -OriginalSize     $origSize
             } else {
                 # Fall back to real Remove-Item if shell cannot parse the item.
                 Microsoft.PowerShell.Management\Remove-Item -LiteralPath $f -Recurse -Force

@@ -250,7 +250,7 @@ if (-not $selBinItem) { _Pass "selective: not in Recycle Bin (permanent delete)"
 else { _Fail "selective: file in Recycle Bin; expected permanent delete for non-AI caller" }
 _SetMode 'always'
 
-_Section "rm_wrapper: safe mode — non-AI caller deleted, no manifest entry"
+_Section "rm_wrapper: safe mode — non-AI caller deleted, manifest entry written"
 _SetMode 'safe'
 $fSafe    = Join-Path $WorkDir "safe-passthrough.txt"
 "safe-content" | Set-Content $fSafe
@@ -261,10 +261,10 @@ Remove-Item -LiteralPath $fSafe
 if (-not (Test-Path $fSafe)) { _Pass "safe: file deleted from original path" }
 else { _Fail "safe: file still exists after Remove-Item" }
 
-# Critically: safe mode must NOT write a manifest entry for a non-AI caller.
+# Safe mode now writes manifest metadata for all deletions (including non-AI).
 $safeEntry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absFSafe }
-if (-not $safeEntry) { _Pass "safe: no manifest entry (non-AI caller not tracked)" }
-else { _Fail "safe: manifest entry unexpectedly created for non-AI caller in safe mode" }
+if ($safeEntry) { _Pass "safe: manifest entry created (metadata always written)" }
+else { _Fail "safe: no manifest entry — safe mode should write metadata for all deletions" }
 _SetMode 'always'
 
 _Section "rm_wrapper: safe mode — AI caller (TERM_PROGRAM=cursor) still routes to ai-trash"
