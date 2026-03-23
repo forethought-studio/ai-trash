@@ -16,7 +16,7 @@ AI agents are useful but occasionally delete the wrong file. By the time you not
 - `/usr/local/bin/rm` (or `/opt/homebrew/bin/rm` on Apple Silicon) is replaced with a wrapper. Since that directory precedes `/bin` in the default PATH, all `rm` calls — from your shell, scripts, build tools, and AI agents — go through it automatically.
 - **macOS**: files on the boot volume go directly to `~/.Trash/` via `FSMoveObjectToTrashSync` (CoreServices), so Finder's **Put Back** works out of the box. They are tagged with `com.ai-trash.*` extended attributes so `ai-trash list/restore/empty` can identify them. Files on external drives use `<volume>/.Trashes/<uid>/ai-trash/`.
 - **Linux**: files go to `~/.local/share/Trash/ai-trash/`; other volumes use `<mountpoint>/.Trash-<uid>/ai-trash/`.
-- **Windows**: a PowerShell `Remove-Item` function is dot-sourced from `$PROFILE` and routes deleted files to `%USERPROFILE%\.Trash\ai-trash\`.
+- **Windows**: a PowerShell `Remove-Item` function is dot-sourced from `$PROFILE` and routes deleted files to the **Windows Recycle Bin** via `Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile`. A JSON manifest at `%USERPROFILE%\.config\ai-trash\manifest.json` tracks each deletion so `ai-trash list/restore/empty` can find and recover items. Explorer's native "Restore" also works, since the files are in the real Recycle Bin.
 - Each trashed item keeps its original filename. Name collisions are handled Finder-style: `file (2).txt`, `file (3).txt`.
 - Metadata is stored as extended attributes on the file itself: original path, deletion time (UTC), who deleted it, and original size.
 - A LaunchAgent runs every 6 hours and permanently purges items older than 30 days.
@@ -85,7 +85,6 @@ The installer copies the scripts to `$env:USERPROFILE\.ai-trash\`, dot-sources t
 ```bash
 rm myfile.txt          # moves to ~/.Trash/ (macOS) or ~/.Trash/ai-trash/ (Linux) — recoverable
 rm -rf build/          # same — whole directory is recoverable
-rm *.log               # .log files are disposable → permanently deleted
 find . -name "*.bak" | xargs rm   # works correctly — files are trashed, no hanging
 ```
 
@@ -117,10 +116,10 @@ ai-trash empty --older-than 7      # delete only items older than 7 days
 
 ### Recovery metadata
 
-Each trashed item carries `com.ai-trash.*` extended attributes you can inspect directly:
+On macOS and Linux, each trashed item carries `com.ai-trash.*` extended attributes you can inspect directly:
 
 ```bash
-# macOS (new-style — top-level ~/.Trash/)
+# macOS (top-level ~/.Trash/)
 xattr -p com.ai-trash.original-path  ~/.Trash/myfile.txt
 xattr -p com.ai-trash.deleted-at     ~/.Trash/myfile.txt
 xattr -p com.ai-trash.deleted-by     ~/.Trash/myfile.txt
@@ -129,6 +128,12 @@ xattr -p com.ai-trash.deleted-by-process  ~/.Trash/myfile.txt
 
 # Linux / external drives
 xattr -p com.ai-trash.original-path  ~/.local/share/Trash/ai-trash/myfile.txt
+```
+
+On Windows, metadata is stored in a JSON manifest instead:
+
+```powershell
+Get-Content "$env:USERPROFILE\.config\ai-trash\manifest.json" | ConvertFrom-Json
 ```
 
 ### Customising

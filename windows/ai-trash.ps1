@@ -22,7 +22,7 @@ $ErrorActionPreference = 'Stop'
 
 $MANIFEST_PATH = "$env:USERPROFILE\.config\ai-trash\manifest.json"
 $PROG          = 'ai-trash'
-$VERSION       = '1.2.0'
+$VERSION       = '1.3.0'
 
 # ─── Helpers ───────────────────────────────────────────────────────────────────
 
