@@ -406,7 +406,9 @@ function Cmd-Restore {
                 exit 1
             }
         }
-        # Bin item not found (user may have emptied Recycle Bin) — prune and fall through.
+        # Bin item not found — the file may have been permanently deleted (Recycle Bin was
+        # disabled or full at deletion time) or the user manually emptied the Recycle Bin.
+        Write-Warning "$PROG`: '$target' is no longer in the Recycle Bin and cannot be restored from it."
         $remaining = @($manifest | Where-Object { $_ -ne $entry })
         _WriteManifest -Entries $remaining
     }

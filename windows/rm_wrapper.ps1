@@ -172,6 +172,62 @@ function _AiTrash-AddManifestEntry {
     _AiTrash-WriteManifest -Entries $entries
 }
 
+# ─── Recycle Bin availability helpers ─────────────────────────────────────────
+
+# Returns $true if the Windows Recycle Bin is available for the given path.
+# $false means SendToRecycleBin will silently permanently delete — use legacy fallback instead.
+function _AiTrash-IsBinAvailable {
+    param([string]$Path)
+    # Network paths (UNC or mapped network drive): SHFileOperation with FOF_ALLOWUNDO
+    # silently permanently deletes them instead of recycling.
+    try {
+        $root = [System.IO.Path]::GetPathRoot($Path)
+        if ($root.StartsWith('\\')) { return $false }  # UNC path
+        $driveInfo = [System.IO.DriveInfo]::new($root)
+        if ($driveInfo.DriveType -eq [System.IO.DriveType]::Network) { return $false }
+    } catch { }
+
+    # Policy: Recycle Bin disabled globally via Group Policy or user setting.
+    try {
+        $pol = Get-ItemProperty -LiteralPath 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer' `
+                   -Name 'NoRecycleFiles' -ErrorAction SilentlyContinue
+        if ($pol -and $pol.NoRecycleFiles -eq 1) { return $false }
+        $pol = Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer' `
+                   -Name 'NoRecycleFiles' -ErrorAction SilentlyContinue
+        if ($pol -and $pol.NoRecycleFiles -eq 1) { return $false }
+    } catch { }
+
+    return $true
+}
+
+# Returns $true if OriginalPath appears in $RECYCLE.BIN\<SID> as a $I metadata file.
+# Used after DeleteFile/DeleteDirectory to verify the file was actually recycled (not
+# silently permanently deleted due to quota, file-size limits, or other edge cases not
+# caught by the pre-check). Returns $true when the bin directory is inaccessible (optimistic
+# to avoid false "permanently deleted" warnings when we simply cannot read the bin).
+function _AiTrash-ConfirmInRecycleBin {
+    param([string]$OriginalPath)
+    try {
+        $sid    = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        $root   = [System.IO.Path]::GetPathRoot($OriginalPath)
+        $binDir = Join-Path $root "`$RECYCLE.BIN\$sid"
+        if (-not (Test-Path -LiteralPath $binDir -ErrorAction SilentlyContinue)) { return $true }
+        $iFiles = Get-ChildItem -LiteralPath $binDir -Filter '$I*' -Force -ErrorAction SilentlyContinue
+        foreach ($iFile in $iFiles) {
+            try {
+                $bytes = [System.IO.File]::ReadAllBytes($iFile.FullName)
+                if ($bytes.Length -lt 28) { continue }
+                $version   = [System.BitConverter]::ToInt64($bytes, 0)
+                $pathStart = if ($version -ge 2) { 28 } else { 24 }
+                $pathBytes = $bytes[$pathStart..($bytes.Length - 1)]
+                $path      = [System.Text.Encoding]::Unicode.GetString($pathBytes).TrimEnd([char]0)
+                if ($path -ieq $OriginalPath) { return $true }
+            } catch { }
+        }
+        return $false
+    } catch { return $true }  # optimistic on error — avoid false "permanently deleted" warnings
+}
+
 # ─── Metadata helpers (legacy folder) ─────────────────────────────────────────
 
 # Detect whether the volume hosting $Path uses NTFS.
@@ -350,24 +406,37 @@ function _AiTrash-MoveToAiTrash {
         } catch { }
 
         # Primary path: send to the real Windows Recycle Bin via VisualBasic.FileIO.
-        $sentToRecycleBin = $false
-        try {
-            $itemObj = Get-Item -LiteralPath $f -ErrorAction Stop
-            if ($itemObj.PSIsContainer) {
-                [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory(
-                    $absPath,
-                    [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs,
-                    [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin
-                )
-            } else {
-                [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile(
-                    $absPath,
-                    [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs,
-                    [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin
-                )
-            }
-            $sentToRecycleBin = $true
-        } catch { }
+        # Option 1 (pre-check): skip bin entirely for paths where SendToRecycleBin is known
+        # to silently permanently delete (network paths, NoRecycleFiles policy).
+        $sentToRecycleBin   = $false
+        $permanentlyDeleted = $false
+        if (_AiTrash-IsBinAvailable -Path $absPath) {
+            try {
+                $itemObj = Get-Item -LiteralPath $f -ErrorAction Stop
+                if ($itemObj.PSIsContainer) {
+                    [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory(
+                        $absPath,
+                        [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs,
+                        [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin
+                    )
+                } else {
+                    [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile(
+                        $absPath,
+                        [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs,
+                        [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin
+                    )
+                }
+                # Option 2 (post-scan): verify the file actually landed in the Recycle Bin.
+                # SendToRecycleBin can silently permanently delete when the bin quota is full
+                # or other edge cases the pre-check cannot predict.
+                if (_AiTrash-ConfirmInRecycleBin -OriginalPath $absPath) {
+                    $sentToRecycleBin = $true
+                } else {
+                    $permanentlyDeleted = $true
+                    Write-Warning "Remove-Item: '$f' could not be sent to the Recycle Bin and was permanently deleted."
+                }
+            } catch { }
+        }
 
         if ($sentToRecycleBin) {
             if ($Verbose) { Write-Host $f }
@@ -377,6 +446,11 @@ function _AiTrash-MoveToAiTrash {
                 -DeletedBy        $deletedBy `
                 -DeletedByProcess $deletedByProcess `
                 -OriginalSize     $origSize
+            continue
+        }
+
+        if ($permanentlyDeleted) {
+            # File is already gone — no fallback possible, no manifest entry written.
             continue
         }
 
