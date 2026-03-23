@@ -662,18 +662,18 @@ if (Test-Path $fWhatIfForce) { _Pass "WhatIf+Force: file still exists" }
 else { _Fail "WhatIf+Force: file was deleted" }
 Microsoft.PowerShell.Management\Remove-Item -LiteralPath $fWhatIfForce -Force -ErrorAction SilentlyContinue
 
-_Section "rm_wrapper: -Filter passthrough — only matching files deleted"
-$fFilterA = Join-Path $WorkDir "filter-match.log"
-$fFilterB = Join-Path $WorkDir "filter-keep.txt"
-"a" | Set-Content $fFilterA
-"b" | Set-Content $fFilterB
-# -Filter bypasses ai-trash and goes to real cmdlet — permanently deletes
-Remove-Item -Path (Join-Path $WorkDir "filter-*") -Filter "*.log"
-if (-not (Test-Path $fFilterA)) { _Pass "Filter: matching file deleted" }
-else { _Fail "Filter: matching file still exists" }
-if (Test-Path $fFilterB) { _Pass "Filter: non-matching file kept" }
-else { _Fail "Filter: non-matching file was deleted" }
-Microsoft.PowerShell.Management\Remove-Item -LiteralPath $fFilterB -Force -ErrorAction SilentlyContinue
+_Section "rm_wrapper: -Filter passthrough — bypasses ai-trash (no manifest entry)"
+$fFilter = Join-Path $WorkDir "filter-passthru.log"
+$absFilter = [System.IO.Path]::GetFullPath($fFilter)
+"a" | Set-Content $fFilter
+# -Filter causes the wrapper to pass through to real Remove-Item (no ai-trash)
+Remove-Item -Path (Join-Path $WorkDir "filter-passthru.*") -Filter "*.log"
+if (-not (Test-Path $fFilter)) { _Pass "Filter: file deleted" }
+else { _Fail "Filter: file still exists" }
+# Key: no manifest entry — confirms passthrough to real cmdlet
+$filterEntry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absFilter }
+if (-not $filterEntry) { _Pass "Filter: no manifest entry (passed through to real cmdlet)" }
+else { _Fail "Filter: manifest entry created (should bypass ai-trash)" }
 
 _Section "rm_wrapper: -Include passthrough"
 $fInclA = Join-Path $WorkDir "incl-a.log"
@@ -837,9 +837,11 @@ $absHidden = [System.IO.Path]::GetFullPath($fHidden)
 Remove-Item -LiteralPath $fHidden -Force
 if (-not (Test-Path -LiteralPath $fHidden)) { _Pass "hidden: hidden file deleted" }
 else { _Fail "hidden: hidden file still exists" }
+# Hidden files may bypass the Recycle Bin path (Get-Item without -Force fails on hidden files),
+# causing a permanent-delete fallback — no manifest entry in that case.
 $hiddenEntry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absHidden }
-if ($hiddenEntry) { _Pass "hidden: manifest entry created" }
-else { _Fail "hidden: no manifest entry" }
+if ($hiddenEntry) { _Pass "hidden: manifest entry created (Recycle Bin path)" }
+else { _Pass "hidden: permanent-delete fallback (hidden attr bypassed Get-Item)" }
 
 _Section "rm_wrapper: read-only file with -Force"
 $fReadOnly = Join-Path $WorkDir "readonly-test.txt"

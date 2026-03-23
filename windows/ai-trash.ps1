@@ -304,7 +304,7 @@ function Cmd-Empty {
     }
 
     # ── Collect manifest (Recycle Bin) entries to delete ──────────────────────
-    $manifest = _ReadManifest
+    $manifest = @(_ReadManifest)
     $toDelete = [System.Collections.Generic.List[object]]::new()
     $toKeep   = [System.Collections.Generic.List[object]]::new()
 
