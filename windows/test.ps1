@@ -180,6 +180,10 @@ if ($binCheck) {
         $content = (Get-Content $f2 -Raw).Trim()
         if ($content -eq 'restore-content') { _Pass "restore: content intact" }
         else { _Fail "restore: content='$content'" }
+        # Verify the manifest entry was removed after a successful restore.
+        $staleEntry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absF2 }
+        if (-not $staleEntry) { _Pass "restore: manifest entry removed after restore" }
+        else { _Fail "restore: stale manifest entry remains after restore" }
     } else { _Fail "restore: file not at original path after restore. Output: $out" }
 } else { _Fail "restore: file not found in Recycle Bin before restore" }
 
@@ -233,6 +237,47 @@ if (Test-Path $legacyOrig) {
     _Pass "legacy: restore from legacy folder works"
     Microsoft.PowerShell.Management\Remove-Item -LiteralPath $legacyOrig -Force -EA SilentlyContinue
 } else { _Fail "legacy: restore from legacy folder failed. Output: $out" }
+
+_Section "ai-trash-cleanup.ps1: old entries purged from manifest and Recycle Bin"
+# Delete a file so it lands in the bin + manifest.
+$cleanupOldFile = Join-Path $WorkDir "cleanup-old.txt"
+"old" | Set-Content $cleanupOldFile
+$absCleanupOld = [System.IO.Path]::GetFullPath($cleanupOldFile)
+Remove-Item -LiteralPath $cleanupOldFile
+
+$preCleanupEntry = @(_ReadTestManifest) | Where-Object { $_.'original-path' -ieq $absCleanupOld }
+if ($preCleanupEntry) { _Pass "cleanup: pre-cleanup manifest entry present" }
+else { _Fail "cleanup: file not in manifest before cleanup test" }
+
+# Backdate the manifest entry to 31 days ago so the cleanup script will purge it.
+$allEntries = @(_ReadTestManifest)
+$oldDate    = (Get-Date).AddDays(-31).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+foreach ($e in $allEntries) {
+    if ($e.'original-path' -ieq $absCleanupOld) { $e.'deleted-at' = $oldDate }
+}
+_AiTrash-WriteManifest -Entries $allEntries
+
+$countBeforeCleanup = @(_ReadTestManifest).Count
+
+# Run the cleanup script (inherits the test USERPROFILE so it uses the test manifest).
+& pwsh -NoProfile -NonInteractive -File "$RepoDir\windows\ai-trash-cleanup.ps1" -DaysOld 30 2>&1 | Out-Null
+
+$afterEntries = @(_ReadTestManifest)
+
+# Old entry must be gone from manifest.
+$oldEntryAfter = $afterEntries | Where-Object { $_.'original-path' -ieq $absCleanupOld }
+if (-not $oldEntryAfter) { _Pass "cleanup: old manifest entry removed" }
+else { _Fail "cleanup: old manifest entry still present after cleanup" }
+
+# Recent entries must be untouched.
+$expectedAfter = $countBeforeCleanup - 1
+if ($afterEntries.Count -eq $expectedAfter) { _Pass "cleanup: recent entries kept ($($afterEntries.Count) remain)" }
+else { _Fail "cleanup: expected $expectedAfter entries after cleanup, got $($afterEntries.Count)" }
+
+# The actual $R/$I files must be deleted from the Recycle Bin.
+$binAfterCleanup = _FindInBin -OriginalPath $absCleanupOld
+if (-not $binAfterCleanup) { _Pass "cleanup: old bin item deleted from Recycle Bin" }
+else { _Fail "cleanup: old bin item still in Recycle Bin after cleanup" }
 
 _Section "ai-trash CLI: empty --older-than (recent items not deleted)"
 $beforeCount = @(_ReadTestManifest).Count
