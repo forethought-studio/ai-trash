@@ -1023,7 +1023,20 @@ _ai_trash empty --force >/dev/null 2>&1
 # ─── git wrapper ─────────────────────────────────────────────────────────
 GIT_LINK="$WORK_DIR/git"
 ln -sf "$REPO_DIR/git_wrapper.sh" "$GIT_LINK"
-REAL_GIT=$(which git 2>/dev/null || echo /usr/bin/git)
+# Find real git binary, skipping ai-trash wrapper symlinks
+_find_test_real_git() {
+  local IFS=:
+  for dir in $PATH; do
+    [[ -x "$dir/git" ]] || continue
+    local candidate="$dir/git"
+    while [[ -L "$candidate" ]]; do candidate=$(readlink "$candidate"); done
+    [[ "$(basename "$candidate")" == "git_wrapper.sh" ]] && continue
+    printf '%s' "$dir/git"
+    return
+  done
+  printf '%s' "/usr/bin/git"
+}
+REAL_GIT=$(_find_test_real_git)
 
 # Helper: run git command via wrapper in AI context
 _git() {
@@ -1680,24 +1693,24 @@ _section "BUG: git clean locale — sed fails on non-English git output"
 # Create a fake git that outputs German-style dry-run for "clean -n" but real git for everything else
 fake_git_dir="$WORK_DIR/fake-git-locale"
 mkdir -p "$fake_git_dir"
-cat > "$fake_git_dir/git" <<'FAKEGIT'
+cat > "$fake_git_dir/git" <<FAKEGIT
 #!/bin/bash
 # Detect "clean -n" dry-run and simulate non-English git output.
 # Only translate when LC_ALL is NOT set to C (the fix forces LC_ALL=C).
+# Use the real git binary directly (not via PATH, to avoid looping through wrappers).
+REAL_GIT="$REAL_GIT"
 has_clean=false; has_n=false
-for a in "$@"; do
-  [[ "$a" == "clean" ]] && has_clean=true
-  [[ "$a" =~ ^-.*n ]] && has_n=true
+for a in "\$@"; do
+  [[ "\$a" == "clean" ]] && has_clean=true
+  [[ "\$a" =~ ^-.*n ]] && has_n=true
 done
-if [[ "$has_clean" == true && "$has_n" == true && "${LC_ALL:-}" != "C" ]]; then
+if [[ "\$has_clean" == true && "\$has_n" == true && "\${LC_ALL:-}" != "C" ]]; then
   # Simulate German locale output for git clean -n
-  REAL_GIT=$(PATH="/usr/local/bin:/usr/bin:/bin" which git)
-  "$REAL_GIT" clean -n "$@" 2>/dev/null | sed 's/^Would remove /Würde löschen: /'
+  "\$REAL_GIT" clean -n "\$@" 2>/dev/null | sed 's/^Would remove /Würde löschen: /'
   exit 0
 fi
 # For everything else (or when LC_ALL=C), use real git
-REAL_GIT=$(PATH="/usr/local/bin:/usr/bin:/bin" which git)
-exec "$REAL_GIT" "$@"
+exec "\$REAL_GIT" "\$@"
 FAKEGIT
 chmod +x "$fake_git_dir/git"
 
