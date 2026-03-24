@@ -69,19 +69,34 @@ if [[ -f "$BIN/rm" && ! -L "$BIN/rm" ]]; then
   echo "  backed up existing $BIN/rm → $BIN/rm_wrapper_old.sh"
 fi
 
+sudo cp "$SCRIPT_DIR/ai-trash-lib.sh"   "$BIN/ai-trash-lib.sh"
 sudo cp "$SCRIPT_DIR/rm_wrapper.sh"    "$BIN/rm_wrapper.sh"
+sudo cp "$SCRIPT_DIR/git_wrapper.sh"   "$BIN/git_wrapper.sh"
+sudo cp "$SCRIPT_DIR/find_wrapper.sh"  "$BIN/find_wrapper.sh"
 sudo cp "$SCRIPT_DIR/ai-trash-cleanup" "$BIN/ai-trash-cleanup"
 sudo cp "$SCRIPT_DIR/ai-trash"         "$BIN/ai-trash"
 
-sudo chmod 755 "$BIN/rm_wrapper.sh" "$BIN/ai-trash-cleanup" "$BIN/ai-trash"
+sudo chmod 755 "$BIN/ai-trash-lib.sh" "$BIN/rm_wrapper.sh" "$BIN/git_wrapper.sh" \
+  "$BIN/find_wrapper.sh" "$BIN/ai-trash-cleanup" "$BIN/ai-trash"
 
-# Create rm and rmdir symlinks
+# Create rm, rmdir, and unlink symlinks
 sudo ln -sf "$BIN/rm_wrapper.sh" "$BIN/rm"
 sudo ln -sf "$BIN/rm_wrapper.sh" "$BIN/rmdir"
+sudo ln -sf "$BIN/rm_wrapper.sh" "$BIN/unlink"
 
+# Create git and find symlinks
+sudo ln -sf "$BIN/git_wrapper.sh" "$BIN/git"
+sudo ln -sf "$BIN/find_wrapper.sh" "$BIN/find"
+
+echo "  ai-trash-lib.sh installed (shared library)"
 echo "  rm_wrapper.sh installed"
-echo "  $BIN/rm  → rm_wrapper.sh"
-echo "  $BIN/rmdir → rm_wrapper.sh"
+echo "  $BIN/rm     → rm_wrapper.sh"
+echo "  $BIN/rmdir  → rm_wrapper.sh"
+echo "  $BIN/unlink → rm_wrapper.sh"
+echo "  git_wrapper.sh installed"
+echo "  $BIN/git    → git_wrapper.sh"
+echo "  find_wrapper.sh installed"
+echo "  $BIN/find   → find_wrapper.sh"
 echo "  ai-trash-cleanup installed"
 echo "  ai-trash installed"
 
@@ -143,9 +158,11 @@ else
 fi
 
 echo ""
-echo "Done. Your rm is now protected."
+echo "Done. AI-triggered deletions are now protected."
 echo ""
 echo "  rm myfile.txt           → moves to $TRASH_EXAMPLE (recoverable)"
+echo "  git clean -fd           → snapshots files before cleaning"
+echo "  git reset --hard        → snapshots changes before resetting"
 echo "  ai-trash list           → show everything in AI trash"
 echo "  ai-trash restore <name> → restore to original location"
 echo "  ai-trash empty          → permanently delete all AI trash"
@@ -156,12 +173,12 @@ for c in "${CANDIDATES[@]}"; do
   [[ "$c" == "$BIN" ]] && continue
   if [[ -f "$c/rm_wrapper.sh" ]] && grep -q "ai-trash" "$c/rm_wrapper.sh" 2>/dev/null; then
     echo "  removing stale install from $c"
-    for f in rm_wrapper.sh ai-trash ai-trash-cleanup; do
+    for f in ai-trash-lib.sh rm_wrapper.sh git_wrapper.sh find_wrapper.sh ai-trash ai-trash-cleanup; do
       sudo rm -f "$c/$f"
     done
-    for cmd in rm rmdir; do
+    for cmd in rm rmdir unlink git find; do
       target=$(readlink "$c/$cmd" 2>/dev/null || true)
-      if [[ "$target" == *rm_wrapper* ]]; then
+      if [[ "$target" == *_wrapper* ]]; then
         sudo rm -f "$c/$cmd"
       fi
     done

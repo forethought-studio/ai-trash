@@ -971,6 +971,277 @@ fi
 # Clear items added by gap-coverage tests
 _ai_trash empty --force >/dev/null 2>&1
 
+# ─── unlink wrapper ──────────────────────────────────────────────────────
+UNLINK_LINK="$WORK_DIR/unlink"
+ln -sf "$REPO_DIR/rm_wrapper.sh" "$UNLINK_LINK"
+_unlink() {
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor bash "$UNLINK_LINK" "$@"
+}
+
+_section "unlink_wrapper: file goes to ai-trash"
+f_unlink="$WORK_DIR/unlink-test.txt"
+echo "unlink me" > "$f_unlink"
+_unlink "$f_unlink"
+if [[ ! -f "$f_unlink" ]] && ls "$TEST_TRASH/" 2>/dev/null | grep -q "unlink-test.txt"; then
+  _pass "unlink: file moved to ai-trash"
+else
+  _fail "unlink: file not in ai-trash. exists=$(test -f "$f_unlink" && echo yes || echo no)"
+fi
+
+_section "unlink_wrapper: missing file errors"
+unlink_ne_out=$(_unlink "$WORK_DIR/unlink-nonexistent.txt" 2>&1; echo "EXIT:$?")
+unlink_ne_exit=$(echo "$unlink_ne_out" | grep "EXIT:" | cut -d: -f2)
+[[ "$unlink_ne_exit" == "1" ]] && _pass "unlink: missing file exits 1" \
+  || _fail "unlink: missing file exits $unlink_ne_exit"
+
+_section "unlink_wrapper: directory errors"
+d_unlink="$WORK_DIR/unlink-dir"
+mkdir -p "$d_unlink"
+unlink_dir_out=$(_unlink "$d_unlink" 2>&1; echo "EXIT:$?")
+unlink_dir_exit=$(echo "$unlink_dir_out" | grep "EXIT:" | cut -d: -f2)
+if [[ "$unlink_dir_exit" == "1" ]] && [[ -d "$d_unlink" ]]; then
+  _pass "unlink: directory errors, untouched"
+else
+  _fail "unlink: directory exit=$unlink_dir_exit dir_exists=$(test -d "$d_unlink" && echo yes || echo no)"
+fi
+/bin/rm -rf "$d_unlink"
+
+_section "unlink_wrapper: metadata written"
+f_unlink_meta="$WORK_DIR/unlink-meta.txt"
+echo "meta" > "$f_unlink_meta"
+_unlink "$f_unlink_meta"
+item_unlink_meta="$TEST_TRASH/unlink-meta.txt"
+if [[ -e "$item_unlink_meta" ]]; then
+  orig=$(_read_meta "$item_unlink_meta" original-path)
+  [[ -n "$orig" ]] && _pass "unlink meta: original-path set" || _fail "unlink meta: original-path empty"
+else
+  _fail "unlink meta: item not found in trash"
+fi
+
+_ai_trash empty --force >/dev/null 2>&1
+
+# ─── git wrapper ─────────────────────────────────────────────────────────
+GIT_LINK="$WORK_DIR/git"
+ln -sf "$REPO_DIR/git_wrapper.sh" "$GIT_LINK"
+REAL_GIT=$(which git 2>/dev/null || echo /usr/bin/git)
+
+# Helper: run git command via wrapper in AI context
+_git() {
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
+    bash "$GIT_LINK" "$@"
+}
+
+# Helper: run real git
+_rgit() {
+  "$REAL_GIT" "$@"
+}
+
+# Create a temporary git repo for testing
+GIT_REPO="$WORK_DIR/git-test-repo"
+mkdir -p "$GIT_REPO"
+(
+  cd "$GIT_REPO"
+  _rgit init -q
+  _rgit config user.email "test@test.com"
+  _rgit config user.name "Test"
+  echo "initial" > file.txt
+  _rgit add file.txt
+  _rgit commit -q -m "Initial commit"
+)
+
+_section "git_wrapper: non-destructive passthrough"
+out=$(cd "$GIT_REPO" && _git status 2>&1)
+if echo "$out" | grep -qE "branch|On branch"; then
+  _pass "git passthrough: git status works"
+else
+  _fail "git passthrough: unexpected output: $out"
+fi
+
+_section "git_wrapper: git clean -fd snapshots untracked files"
+(cd "$GIT_REPO" && echo "untracked content" > untracked-file.txt)
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+(cd "$GIT_REPO" && _git clean -fd 2>/dev/null)
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$after_count" -gt "$before_count" ]]; then
+  _pass "git clean -fd: file snapshotted to trash"
+else
+  _fail "git clean -fd: no snapshot in trash (before=$before_count after=$after_count)"
+fi
+# Verify git actually cleaned (file should be gone)
+if [[ ! -f "$GIT_REPO/untracked-file.txt" ]]; then
+  _pass "git clean -fd: untracked file actually cleaned"
+else
+  _fail "git clean -fd: file still exists"
+fi
+
+_section "git_wrapper: git checkout -- . snapshots modified files"
+(cd "$GIT_REPO" && echo "modified" > file.txt)
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+(cd "$GIT_REPO" && _git checkout -- . 2>/dev/null)
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$after_count" -gt "$before_count" ]]; then
+  _pass "git checkout -- .: modified file snapshotted"
+else
+  _fail "git checkout -- .: no snapshot (before=$before_count after=$after_count)"
+fi
+# Verify file is restored to original content
+content=$(cat "$GIT_REPO/file.txt")
+if [[ "$content" == "initial" ]]; then
+  _pass "git checkout -- .: file restored to original"
+else
+  _fail "git checkout -- .: content='$content' expected 'initial'"
+fi
+
+_section "git_wrapper: git restore . snapshots modified files"
+(cd "$GIT_REPO" && echo "modified again" > file.txt)
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+(cd "$GIT_REPO" && _git restore . 2>/dev/null)
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$after_count" -gt "$before_count" ]]; then
+  _pass "git restore .: modified file snapshotted"
+else
+  _fail "git restore .: no snapshot (before=$before_count after=$after_count)"
+fi
+
+_section "git_wrapper: git reset --hard saves patch and snapshots files"
+(cd "$GIT_REPO" && echo "uncommitted change" > file.txt && _rgit add file.txt)
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+(cd "$GIT_REPO" && _git reset --hard HEAD 2>/dev/null)
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$after_count" -gt "$before_count" ]]; then
+  _pass "git reset --hard: changes snapshotted"
+else
+  _fail "git reset --hard: no snapshot (before=$before_count after=$after_count)"
+fi
+# Check for patch file
+patch_file=$(ls "$TEST_TRASH/" 2>/dev/null | grep "git-reset-hard" || true)
+if [[ -n "$patch_file" ]]; then
+  _pass "git reset --hard: patch file saved ($patch_file)"
+else
+  _skip "git reset --hard: no patch file (stash create may have returned empty)"
+fi
+
+_section "git_wrapper: git stash drop saves patch"
+(cd "$GIT_REPO" && echo "stash me" > file.txt && _rgit stash -q 2>/dev/null)
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+(cd "$GIT_REPO" && _git stash drop 2>/dev/null)
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$after_count" -gt "$before_count" ]]; then
+  _pass "git stash drop: patch saved to trash"
+else
+  _fail "git stash drop: no patch (before=$before_count after=$after_count)"
+fi
+
+_section "git_wrapper: git stash clear saves all patches"
+# Create two stashes
+(cd "$GIT_REPO" && echo "stash1" > file.txt && _rgit stash -q 2>/dev/null)
+(cd "$GIT_REPO" && echo "stash2" > file.txt && _rgit stash -q 2>/dev/null)
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+(cd "$GIT_REPO" && _git stash clear 2>/dev/null)
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$after_count" -gt "$before_count" ]]; then
+  _pass "git stash clear: patches saved to trash"
+else
+  _fail "git stash clear: no patches (before=$before_count after=$after_count)"
+fi
+
+_section "git_wrapper: git branch -D saves branch tip SHA"
+(cd "$GIT_REPO" && _rgit checkout -qb test-branch && _rgit checkout -q master 2>/dev/null || _rgit checkout -q main 2>/dev/null)
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+(cd "$GIT_REPO" && _git branch -D test-branch 2>/dev/null)
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$after_count" -gt "$before_count" ]]; then
+  sha_file=$(ls "$TEST_TRASH/" 2>/dev/null | grep "git-branch-D" || true)
+  _pass "git branch -D: branch tip saved ($sha_file)"
+else
+  _fail "git branch -D: no recovery info (before=$before_count after=$after_count)"
+fi
+
+_section "git_wrapper: git filter-repo is blocked"
+filter_out=$(cd "$GIT_REPO" && _git filter-repo --force 2>&1; echo "EXIT:$?")
+filter_exit=$(echo "$filter_out" | grep "EXIT:" | cut -d: -f2)
+if [[ "$filter_exit" == "1" ]] && echo "$filter_out" | grep -qi "blocked"; then
+  _pass "git filter-repo: blocked with error"
+else
+  _fail "git filter-repo: exit=$filter_exit output=$filter_out"
+fi
+
+_section "git_wrapper: non-destructive git commands unaffected"
+# Verify git log, git diff, git status, git commit all work
+out=$(cd "$GIT_REPO" && _git log --oneline -1 2>&1)
+if echo "$out" | grep -q "Initial commit"; then
+  _pass "git passthrough: git log works"
+else
+  _fail "git passthrough: git log unexpected: $out"
+fi
+
+_section "git_wrapper: git restore --staged is not intercepted"
+(cd "$GIT_REPO" && echo "staged only" > file.txt && _rgit add file.txt)
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+(cd "$GIT_REPO" && _git restore --staged file.txt 2>/dev/null)
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+# --staged only unstages, doesn't destroy working tree changes — should NOT snapshot
+if [[ "$after_count" -eq "$before_count" ]]; then
+  _pass "git restore --staged: no snapshot (non-destructive)"
+else
+  _fail "git restore --staged: unexpected snapshot (before=$before_count after=$after_count)"
+fi
+# Clean up
+(cd "$GIT_REPO" && _rgit checkout -- file.txt 2>/dev/null)
+
+_ai_trash empty --force >/dev/null 2>&1
+
+# ─── find wrapper ────────────────────────────────────────────────────────
+FIND_LINK="$WORK_DIR/find_cmd"
+ln -sf "$REPO_DIR/find_wrapper.sh" "$FIND_LINK"
+
+_find() {
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
+    bash "$FIND_LINK" "$@"
+}
+
+_section "find_wrapper: -delete routes through rm wrapper"
+find_dir="$WORK_DIR/find-test"
+mkdir -p "$find_dir"
+echo "find me" > "$find_dir/findable.txt"
+echo "find me too" > "$find_dir/findable2.txt"
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+# The rm symlink needs to exist in WORK_DIR for find -exec to find it
+ln -sf "$REPO_DIR/rm_wrapper.sh" "$WORK_DIR/rm" 2>/dev/null || true
+_find "$find_dir" -name "*.txt" -delete 2>/dev/null
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$after_count" -gt "$before_count" ]]; then
+  _pass "find -delete: files routed to trash"
+else
+  _fail "find -delete: no files in trash (before=$before_count after=$after_count)"
+fi
+# Verify files actually removed from source
+if [[ ! -f "$find_dir/findable.txt" && ! -f "$find_dir/findable2.txt" ]]; then
+  _pass "find -delete: source files removed"
+else
+  _fail "find -delete: source files still exist"
+fi
+/bin/rm -rf "$find_dir"
+
+_section "find_wrapper: find without -delete passes through"
+find_dir2="$WORK_DIR/find-passthrough"
+mkdir -p "$find_dir2"
+echo "keep me" > "$find_dir2/keeper.txt"
+out=$(_find "$find_dir2" -name "*.txt" -print 2>&1)
+if echo "$out" | grep -q "keeper.txt"; then
+  _pass "find passthrough: -print works normally"
+else
+  _fail "find passthrough: unexpected output: $out"
+fi
+if [[ -f "$find_dir2/keeper.txt" ]]; then
+  _pass "find passthrough: file untouched"
+else
+  _fail "find passthrough: file unexpectedly deleted"
+fi
+/bin/rm -rf "$find_dir2"
+
+_ai_trash empty --force >/dev/null 2>&1
+
 # ─── Summary ───────────────────────────────────────────────────────────
 echo ""
 echo "──────────────────────────────────────"

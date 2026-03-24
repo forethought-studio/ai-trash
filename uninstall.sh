@@ -54,11 +54,27 @@ else
   fi
 fi
 
-# ─── Remove symlinks (only if they point to our wrapper) ───────────────
+# ─── Remove symlinks (only if they point to our wrappers) ──────────────
 
-for cmd in rm rmdir; do
+for cmd in rm rmdir unlink; do
   target=$(readlink "$BIN/$cmd" 2>/dev/null || true)
-  if [[ "$target" == "$BIN/rm_wrapper.sh" || "$target" == *rm_wrapper* ]]; then
+  if [[ "$target" == *rm_wrapper* ]]; then
+    sudo rm -f "$BIN/$cmd"
+    echo "  removed $BIN/$cmd"
+  fi
+done
+
+for cmd in git; do
+  target=$(readlink "$BIN/$cmd" 2>/dev/null || true)
+  if [[ "$target" == *git_wrapper* ]]; then
+    sudo rm -f "$BIN/$cmd"
+    echo "  removed $BIN/$cmd"
+  fi
+done
+
+for cmd in find; do
+  target=$(readlink "$BIN/$cmd" 2>/dev/null || true)
+  if [[ "$target" == *find_wrapper* ]]; then
     sudo rm -f "$BIN/$cmd"
     echo "  removed $BIN/$cmd"
   fi
@@ -66,7 +82,7 @@ done
 
 # ─── Remove scripts ────────────────────────────────────────────────────
 
-for f in rm_wrapper.sh ai-trash-cleanup ai-trash; do
+for f in ai-trash-lib.sh rm_wrapper.sh git_wrapper.sh find_wrapper.sh ai-trash-cleanup ai-trash; do
   if [[ -f "$BIN/$f" ]]; then
     sudo rm -f "$BIN/$f"
     echo "  removed $BIN/$f"
@@ -84,12 +100,12 @@ for c in "${CANDIDATES[@]}"; do
   [[ "$c" == "$BIN" ]] && continue
   if [[ -f "$c/rm_wrapper.sh" ]] && grep -q "ai-trash" "$c/rm_wrapper.sh" 2>/dev/null; then
     echo "  removing stale install from $c"
-    for f in rm_wrapper.sh ai-trash ai-trash-cleanup; do
+    for f in ai-trash-lib.sh rm_wrapper.sh git_wrapper.sh find_wrapper.sh ai-trash ai-trash-cleanup; do
       sudo rm -f "$c/$f"
     done
-    for cmd in rm rmdir; do
+    for cmd in rm rmdir unlink git find; do
       target=$(readlink "$c/$cmd" 2>/dev/null || true)
-      if [[ "$target" == *rm_wrapper* ]]; then
+      if [[ "$target" == *_wrapper* ]]; then
         sudo rm -f "$c/$cmd"
       fi
     done

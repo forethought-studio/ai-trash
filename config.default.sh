@@ -98,6 +98,29 @@ AI_PROCESS_ARGS=(
 )
 
 
+# GIT PROTECTION
+# ---------------
+# When true, ai-trash intercepts destructive git commands from AI callers:
+#   git clean -fd, git checkout -- ., git restore ., git reset --hard,
+#   git stash drop/clear, git branch -D, git push --force, git filter-repo
+#
+# Affected files are snapshotted to ai-trash BEFORE the git command runs.
+# Non-AI callers and non-destructive git commands are never affected.
+#
+GIT_PROTECTION=true
+# GIT_PROTECTION=false
+
+
+# FIND PROTECTION
+# ----------------
+# When true, ai-trash intercepts "find -delete" from AI callers by replacing
+# -delete with "-exec rm {} +" which routes through the rm wrapper.
+# Non-AI callers are never affected.
+#
+FIND_PROTECTION=true
+# FIND_PROTECTION=false
+
+
 # ADDING YOUR OWN TOOLS
 # ----------------------
 # If an AI tool you use isn't listed above, add it to the appropriate section:
