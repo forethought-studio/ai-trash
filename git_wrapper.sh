@@ -104,6 +104,28 @@ _get_subcommand_args() {
   done
 }
 
+# Get global args before the subcommand (e.g., -C /path, --no-pager)
+_get_global_args() {
+  local skip_next=false
+  for arg in "$@"; do
+    if [[ "$skip_next" == true ]]; then
+      printf '%s\n' "$arg"
+      skip_next=false
+      continue
+    fi
+    case "$arg" in
+      -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--exec-path)
+        printf '%s\n' "$arg"; skip_next=true; continue ;;
+      --git-dir=*|--work-tree=*|-c=*|--namespace=*|--exec-path=*)
+        printf '%s\n' "$arg"; continue ;;
+      --bare|--no-pager|--no-replace-objects|--literal-pathspecs|--glob-pathspecs|--no-optional-locks)
+        printf '%s\n' "$arg"; continue ;;
+      -*) continue ;;
+      *) return ;;  # Hit subcommand, stop
+    esac
+  done
+}
+
 SUBCMD=$(_get_git_subcommand "$@")
 
 # Non-destructive subcommands: instant passthrough
@@ -118,8 +140,14 @@ while IFS= read -r line; do
   [[ -n "$line" ]] && SUB_ARGS+=("$line")
 done < <(_get_subcommand_args "$@")
 
+# ─── Read global args (before subcommand) into array ─────────────────
+GLOBAL_ARGS=()
+while IFS= read -r line; do
+  [[ -n "$line" ]] && GLOBAL_ARGS+=("$line")
+done < <(_get_global_args "$@")
+
 # ─── Get repo toplevel for resolving relative paths ────────────────────
-TOPLEVEL=$("$REAL_GIT" rev-parse --show-toplevel 2>/dev/null) || {
+TOPLEVEL=$("$REAL_GIT" "${GLOBAL_ARGS[@]}" rev-parse --show-toplevel 2>/dev/null) || {
   # Not in a git repo — passthrough
   exec "$REAL_GIT" "$@"
 }
@@ -155,12 +183,13 @@ case "$SUBCMD" in
 
     if [[ "$has_force_flag" == true ]]; then
       # Dry-run to find what would be cleaned (LC_ALL=C forces English output)
-      dry_output=$(LC_ALL=C "$REAL_GIT" clean -n "${SUB_ARGS[@]}" 2>/dev/null) || true
+      dry_output=$(LC_ALL=C "$REAL_GIT" "${GLOBAL_ARGS[@]}" clean -n "${SUB_ARGS[@]}" 2>/dev/null) || true
       if [[ -n "$dry_output" ]]; then
         echo "$dry_output" | sed -n 's/^Would remove //p' | while IFS= read -r f; do
           [[ -z "$f" ]] && continue
-          # git clean -n outputs paths relative to cwd
-          [[ -e "$f" || -L "$f" ]] && snapshot_to_ai_trash "$f"
+          # git clean -n outputs paths relative to the repo root
+          full="$TOPLEVEL/$f"
+          [[ -e "$full" || -L "$full" ]] && snapshot_to_ai_trash "$full"
         done
       fi
     fi
@@ -189,7 +218,7 @@ case "$SUBCMD" in
 
     if [[ "$has_dd" == true || "$has_dot" == true ]]; then
       # Snapshot modified working-tree files
-      "$REAL_GIT" diff --name-only 2>/dev/null | _snapshot_files
+      "$REAL_GIT" "${GLOBAL_ARGS[@]}" diff --name-only 2>/dev/null | _snapshot_files
     fi
 
     exec "$REAL_GIT" "$@"
@@ -216,9 +245,9 @@ case "$SUBCMD" in
     fi
 
     # Snapshot modified working-tree files (unstaged changes)
-    "$REAL_GIT" diff --name-only 2>/dev/null | _snapshot_files
+    "$REAL_GIT" "${GLOBAL_ARGS[@]}" diff --name-only 2>/dev/null | _snapshot_files
     # Also snapshot staged changes (visible via --cached)
-    "$REAL_GIT" diff --cached --name-only 2>/dev/null | _snapshot_files
+    "$REAL_GIT" "${GLOBAL_ARGS[@]}" diff --cached --name-only 2>/dev/null | _snapshot_files
 
     exec "$REAL_GIT" "$@"
     ;;
@@ -238,9 +267,9 @@ case "$SUBCMD" in
 
     if [[ "$has_destructive_reset" == true ]]; then
       # Capture uncommitted state as a temporary stash object
-      stash_sha=$("$REAL_GIT" stash create 2>/dev/null) || true
+      stash_sha=$("$REAL_GIT" "${GLOBAL_ARGS[@]}" stash create 2>/dev/null) || true
       if [[ -n "$stash_sha" ]]; then
-        patch=$("$REAL_GIT" diff "$stash_sha" HEAD 2>/dev/null) || true
+        patch=$("$REAL_GIT" "${GLOBAL_ARGS[@]}" diff "$stash_sha" HEAD 2>/dev/null) || true
         if [[ -n "$patch" ]]; then
           save_to_ai_trash \
             "git-reset-${reset_mode}-$(date +%Y%m%d-%H%M%S).patch" \
@@ -250,8 +279,8 @@ case "$SUBCMD" in
       fi
 
       # Also snapshot modified files directly
-      "$REAL_GIT" diff --name-only 2>/dev/null | _snapshot_files
-      "$REAL_GIT" diff --cached --name-only 2>/dev/null | _snapshot_files
+      "$REAL_GIT" "${GLOBAL_ARGS[@]}" diff --name-only 2>/dev/null | _snapshot_files
+      "$REAL_GIT" "${GLOBAL_ARGS[@]}" diff --cached --name-only 2>/dev/null | _snapshot_files
     fi
 
     exec "$REAL_GIT" "$@"
@@ -265,7 +294,7 @@ case "$SUBCMD" in
       drop)
         # Save the stash patch before dropping
         stash_ref="${SUB_ARGS[1]:-stash@{0}}"
-        patch=$("$REAL_GIT" stash show -p "$stash_ref" 2>/dev/null) || true
+        patch=$("$REAL_GIT" "${GLOBAL_ARGS[@]}" stash show -p "$stash_ref" 2>/dev/null) || true
         if [[ -n "$patch" ]]; then
           save_to_ai_trash \
             "git-stash-drop-$(date +%Y%m%d-%H%M%S).patch" \
@@ -275,13 +304,13 @@ case "$SUBCMD" in
         ;;
       clear)
         # Save ALL stash patches before clearing
-        stash_list=$("$REAL_GIT" stash list 2>/dev/null) || true
+        stash_list=$("$REAL_GIT" "${GLOBAL_ARGS[@]}" stash list 2>/dev/null) || true
         if [[ -n "$stash_list" ]]; then
           all_patches=""
           while IFS= read -r entry; do
             ref="${entry%%:*}"
             header="=== $entry ==="
-            patch=$("$REAL_GIT" stash show -p "$ref" 2>/dev/null) || true
+            patch=$("$REAL_GIT" "${GLOBAL_ARGS[@]}" stash show -p "$ref" 2>/dev/null) || true
             all_patches+="$header"$'\n'"$patch"$'\n\n'
           done <<< "$stash_list"
           if [[ -n "$all_patches" ]]; then
@@ -325,7 +354,7 @@ case "$SUBCMD" in
         esac
         if [[ "$local_after_d" == true ]]; then
           branch_name="$arg"
-          tip_sha=$("$REAL_GIT" rev-parse "$branch_name" 2>/dev/null) || true
+          tip_sha=$("$REAL_GIT" "${GLOBAL_ARGS[@]}" rev-parse "$branch_name" 2>/dev/null) || true
           if [[ -n "$tip_sha" ]]; then
             save_to_ai_trash \
               "git-branch-D-${branch_name}-$(date +%Y%m%d-%H%M%S).txt" \
@@ -366,7 +395,7 @@ Recovery: git branch $branch_name $tip_sha" \
       done
 
       # Capture current remote refs
-      remote_refs=$("$REAL_GIT" ls-remote "$remote" 2>/dev/null) || true
+      remote_refs=$("$REAL_GIT" "${GLOBAL_ARGS[@]}" ls-remote "$remote" 2>/dev/null) || true
       if [[ -n "$remote_refs" ]]; then
         save_to_ai_trash \
           "git-push-force-$(date +%Y%m%d-%H%M%S).txt" \

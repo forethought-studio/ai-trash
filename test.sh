@@ -1455,7 +1455,7 @@ ln -sf "$REPO_DIR/find_wrapper.sh" "$FIND_LINK"
 
 _find() {
   HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
-    bash "$FIND_LINK" "$@"
+    PATH="$WORK_DIR:$PATH" bash "$FIND_LINK" "$@"
 }
 
 _section "find_wrapper: -delete routes through rm wrapper"
