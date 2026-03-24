@@ -32,6 +32,15 @@ if [[ -z "$HOME" || "$HOME" == "/var/root" ]]; then
   fi
 fi
 
+# Guard: macOS App Sandbox — pass through to real binary
+if [[ -n "${APP_SANDBOX_CONTAINER_ID:-}" ]]; then
+  if [[ "$REAL_CMD" == "unlink" ]]; then
+    exec /usr/bin/unlink "$@"
+  else
+    exec /bin/"$REAL_CMD" "$@"
+  fi
+fi
+
 # selective (default) — non-AI calls pass straight through to /bin/rm unchanged
 # safe                — non-AI calls route to the system Trash instead of /bin/rm
 SAFE_PASSTHROUGH=false

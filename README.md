@@ -159,6 +159,12 @@ To add a tool not on the default list, find its process name with `ps aux | grep
 
 Both uninstallers remove all installed files and leave your trash contents intact. Delete them manually if you want.
 
+## Known limitations
+
+- **macOS App Sandbox blocks wrapper execution.** Sandboxed apps (those with an `APP_SANDBOX_CONTAINER_ID` entitlement) cannot execute binaries from `/usr/local/bin/` or `/opt/homebrew/bin/`. The OS rejects the `exec` before the wrapper script starts running. This is a macOS platform constraint, not an ai-trash bug.
+- **Workaround for sandboxed apps:** Use absolute paths (`/bin/rm`, `/usr/bin/find`) instead of bare `rm`/`find`. This bypasses the wrapper entirely.
+- **Defense-in-depth:** If a partial sandbox allows the script to start, the wrappers detect `APP_SANDBOX_CONTAINER_ID` and pass through to the real binary immediately.
+
 ## What about safe-rm?
 
 [safe-rm](https://launchpad.net/safe-rm) protects specific paths from being deleted at all — it doesn't trash anything. [trash](https://hasseg.org/trash/) is a standalone command that moves files to the macOS Trash but doesn't replace `rm`. Neither handles daemon safety, disposable classification, per-volume routing, recovery metadata, or the `ai-trash` CLI.

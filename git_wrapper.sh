@@ -51,6 +51,11 @@ if [[ -z "$HOME" || "$HOME" == "/var/root" ]]; then
   exec "$REAL_GIT" "$@"
 fi
 
+# Guard: macOS App Sandbox — pass through to real binary
+if [[ -n "${APP_SANDBOX_CONTAINER_ID:-}" ]]; then
+  exec "$REAL_GIT" "$@"
+fi
+
 # Feature toggle
 if [[ "${GIT_PROTECTION:-true}" != true ]]; then
   exec "$REAL_GIT" "$@"

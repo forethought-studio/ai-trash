@@ -2311,6 +2311,89 @@ inv_exit=$(echo "$inv_out" | grep "EXIT:" | cut -d: -f2)
 
 _ai_trash empty --force >/dev/null 2>&1
 
+# ─── macOS App Sandbox guard ─────────────────────────────────────────────
+
+_section "sandbox_guard: rm passes through when APP_SANDBOX_CONTAINER_ID is set"
+_set_mode selective
+f_sandbox_rm="$WORK_DIR/sandbox-rm.txt"
+echo "sandbox" > "$f_sandbox_rm"
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor APP_SANDBOX_CONTAINER_ID="com.example.test" \
+  bash "$REPO_DIR/rm_wrapper.sh" "$f_sandbox_rm" 2>/dev/null
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ ! -f "$f_sandbox_rm" ]] && [[ "$after_count" -eq "$before_count" ]]; then
+  _pass "rm sandbox: file deleted by /bin/rm (not trashed)"
+elif [[ ! -f "$f_sandbox_rm" ]]; then
+  _fail "rm sandbox: file gone but trash count changed (before=$before_count after=$after_count)"
+else
+  _fail "rm sandbox: file still exists"
+fi
+
+_section "sandbox_guard: rmdir passes through when APP_SANDBOX_CONTAINER_ID is set"
+d_sandbox_rmdir="$WORK_DIR/sandbox-rmdir"
+mkdir -p "$d_sandbox_rmdir"
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor APP_SANDBOX_CONTAINER_ID="com.example.test" \
+  bash "$REPO_DIR/rm_wrapper.sh" -d "$d_sandbox_rmdir" 2>/dev/null
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ ! -d "$d_sandbox_rmdir" ]] && [[ "$after_count" -eq "$before_count" ]]; then
+  _pass "rmdir sandbox: dir deleted by /bin/rm (not trashed)"
+elif [[ ! -d "$d_sandbox_rmdir" ]]; then
+  _fail "rmdir sandbox: dir gone but trash count changed"
+else
+  _fail "rmdir sandbox: dir still exists"
+fi
+
+_section "sandbox_guard: unlink passes through when APP_SANDBOX_CONTAINER_ID is set"
+f_sandbox_unlink="$WORK_DIR/sandbox-unlink.txt"
+echo "sandbox-unlink" > "$f_sandbox_unlink"
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor APP_SANDBOX_CONTAINER_ID="com.example.test" \
+  bash "$UNLINK_LINK" "$f_sandbox_unlink" 2>/dev/null || true
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ ! -f "$f_sandbox_unlink" ]] && [[ "$after_count" -eq "$before_count" ]]; then
+  _pass "unlink sandbox: file deleted by real unlink (not trashed)"
+elif [[ -f "$f_sandbox_unlink" ]] && [[ "$after_count" -eq "$before_count" ]]; then
+  # /usr/bin/unlink may not exist on all macOS versions — guard still fired (didn't trash)
+  _pass "unlink sandbox: guard fired (no trash), real unlink not at /usr/bin/unlink"
+  /bin/rm -f "$f_sandbox_unlink"
+else
+  _fail "unlink sandbox: file trashed despite sandbox guard (before=$before_count after=$after_count)"
+fi
+
+_section "sandbox_guard: git passes through when APP_SANDBOX_CONTAINER_ID is set"
+(cd "$GIT_REPO" && echo "sandbox-untracked" > sandbox-untracked.txt)
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor APP_SANDBOX_CONTAINER_ID="com.example.test" \
+  bash "$GIT_LINK" -C "$GIT_REPO" clean -fd 2>/dev/null
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ ! -f "$GIT_REPO/sandbox-untracked.txt" ]] && [[ "$after_count" -eq "$before_count" ]]; then
+  _pass "git sandbox: file cleaned by real git (not snapshotted)"
+elif [[ ! -f "$GIT_REPO/sandbox-untracked.txt" ]]; then
+  _fail "git sandbox: file gone but trash count changed"
+else
+  _fail "git sandbox: file still exists (git clean didn't run)"
+fi
+
+_section "sandbox_guard: find passes through when APP_SANDBOX_CONTAINER_ID is set"
+find_sandbox_dir="$WORK_DIR/find-sandbox"
+mkdir -p "$find_sandbox_dir"
+echo "sandbox-find" > "$find_sandbox_dir/sandbox.txt"
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor APP_SANDBOX_CONTAINER_ID="com.example.test" \
+  PATH="$WORK_DIR:$PATH" bash "$FIND_LINK" "$find_sandbox_dir" -name "*.txt" -delete 2>/dev/null
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ ! -f "$find_sandbox_dir/sandbox.txt" ]] && [[ "$after_count" -eq "$before_count" ]]; then
+  _pass "find sandbox: file deleted by real find (not trashed)"
+elif [[ ! -f "$find_sandbox_dir/sandbox.txt" ]]; then
+  _fail "find sandbox: file gone but trash count changed"
+else
+  _fail "find sandbox: file still exists"
+fi
+/bin/rm -rf "$find_sandbox_dir"
+
+_ai_trash empty --force >/dev/null 2>&1
+
 # ─── Summary ───────────────────────────────────────────────────────────
 echo ""
 echo "──────────────────────────────────────"
