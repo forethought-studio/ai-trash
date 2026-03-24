@@ -389,6 +389,3 @@ $remote_refs" \
     ;;
 
 esac
-
-# Fallback: passthrough (should not reach here due to case above)
-exec "$REAL_GIT" "$@"
