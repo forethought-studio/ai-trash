@@ -79,7 +79,7 @@ new_args=()
 for arg in "$@"; do
   if [[ "$arg" == "-delete" ]]; then
     # Find the rm wrapper in the same directory as us
-    local _frm="${BASH_SOURCE[0]}"
+    _frm="${BASH_SOURCE[0]}"
     while [[ -L "$_frm" ]]; do _frm=$(readlink "$_frm"); done
     local_rm="$(cd "$(dirname "$_frm")" && pwd)/rm"
     if [[ -x "$local_rm" ]]; then

@@ -154,8 +154,8 @@ case "$SUBCMD" in
     done
 
     if [[ "$has_force_flag" == true ]]; then
-      # Dry-run to find what would be cleaned
-      dry_output=$("$REAL_GIT" clean -n "${SUB_ARGS[@]}" 2>/dev/null) || true
+      # Dry-run to find what would be cleaned (LC_ALL=C forces English output)
+      dry_output=$(LC_ALL=C "$REAL_GIT" clean -n "${SUB_ARGS[@]}" 2>/dev/null) || true
       if [[ -n "$dry_output" ]]; then
         echo "$dry_output" | sed -n 's/^Would remove //p' | while IFS= read -r f; do
           [[ -z "$f" ]] && continue
@@ -215,8 +215,10 @@ case "$SUBCMD" in
       exec "$REAL_GIT" "$@"
     fi
 
-    # Snapshot modified working-tree files
+    # Snapshot modified working-tree files (unstaged changes)
     "$REAL_GIT" diff --name-only 2>/dev/null | _snapshot_files
+    # Also snapshot staged changes (visible via --cached)
+    "$REAL_GIT" diff --cached --name-only 2>/dev/null | _snapshot_files
 
     exec "$REAL_GIT" "$@"
     ;;

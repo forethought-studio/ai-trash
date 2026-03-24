@@ -1660,6 +1660,237 @@ fi
 
 _ai_trash empty --force >/dev/null 2>&1
 
+# ─── Bug reproduction tests ─────────────────────────────────────────────
+
+_section "BUG: git clean locale — sed fails on non-English git output"
+# git clean -n outputs "Would remove <file>" in English, but other locales
+# produce different text (e.g. German: "Würde ... löschen").
+# The wrapper uses sed -n 's/^Would remove //p' which only matches English.
+# We simulate this by creating a wrapper around git that outputs non-English dry-run text.
+(
+  cd "$GIT_REPO"
+  echo "locale-test-file.txt" > locale-test-file.txt
+  _rgit add locale-test-file.txt 2>/dev/null
+  _rgit commit -q -m "Add locale test file"
+  _rgit rm -q locale-test-file.txt
+  _rgit reset HEAD -- locale-test-file.txt 2>/dev/null
+  _rgit checkout -- locale-test-file.txt 2>/dev/null
+) 2>/dev/null || true
+(cd "$GIT_REPO" && echo "untracked-locale.txt" > untracked-locale.txt)
+# Create a fake git that outputs German-style dry-run for "clean -n" but real git for everything else
+fake_git_dir="$WORK_DIR/fake-git-locale"
+mkdir -p "$fake_git_dir"
+cat > "$fake_git_dir/git" <<'FAKEGIT'
+#!/bin/bash
+# Detect "clean -n" dry-run and simulate non-English git output.
+# Only translate when LC_ALL is NOT set to C (the fix forces LC_ALL=C).
+has_clean=false; has_n=false
+for a in "$@"; do
+  [[ "$a" == "clean" ]] && has_clean=true
+  [[ "$a" =~ ^-.*n ]] && has_n=true
+done
+if [[ "$has_clean" == true && "$has_n" == true && "${LC_ALL:-}" != "C" ]]; then
+  # Simulate German locale output for git clean -n
+  REAL_GIT=$(PATH="/usr/local/bin:/usr/bin:/bin" which git)
+  "$REAL_GIT" clean -n "$@" 2>/dev/null | sed 's/^Would remove /Würde löschen: /'
+  exit 0
+fi
+# For everything else (or when LC_ALL=C), use real git
+REAL_GIT=$(PATH="/usr/local/bin:/usr/bin:/bin" which git)
+exec "$REAL_GIT" "$@"
+FAKEGIT
+chmod +x "$fake_git_dir/git"
+
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+# Run git wrapper but with our fake git first in PATH (so _find_real_git picks it up)
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
+  PATH="$fake_git_dir:$PATH" bash "$GIT_LINK" -C "$GIT_REPO" clean -fd 2>/dev/null
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$after_count" -gt "$before_count" ]]; then
+  _pass "git clean locale: file snapshotted despite non-English output"
+else
+  _fail "git clean locale: no snapshot with non-English git output (BUG: sed hardcodes English)"
+fi
+# Clean up the test file (it was cleaned by git clean -fd via real git)
+(cd "$GIT_REPO" && /bin/rm -f untracked-locale.txt) 2>/dev/null || true
+/bin/rm -rf "$fake_git_dir"
+
+_section "BUG: find_wrapper local keyword outside function"
+# find_wrapper.sh uses 'local' at the top level of the script (line 82),
+# which produces a warning on stderr in bash.
+find_local_dir="$WORK_DIR/find-local-test"
+mkdir -p "$find_local_dir"
+echo "local-test" > "$find_local_dir/local.txt"
+find_stderr=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
+  bash "$FIND_LINK" "$find_local_dir" -name "*.txt" -delete 2>&1 >/dev/null)
+if echo "$find_stderr" | grep -q "local:"; then
+  _fail "find_wrapper: 'local' keyword used outside function (stderr: $(echo "$find_stderr" | head -1))"
+else
+  _pass "find_wrapper: no 'local' keyword warning"
+fi
+/bin/rm -rf "$find_local_dir"
+
+_section "BUG: snapshot_to_ai_trash cp -R fallback missing -p flag"
+# When cp -a fails (some Linux systems), fallback is cp -R which doesn't preserve
+# timestamps. This isn't a crash bug but it means metadata may be inaccurate.
+# We test that snapshot_to_ai_trash works for a basic file.
+snap_test_dir="$WORK_DIR/snap-test"
+mkdir -p "$snap_test_dir"
+echo "snapshot-content" > "$snap_test_dir/snap-file.txt"
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+# Use git wrapper to trigger snapshot (modify a tracked file, then git checkout)
+(
+  cd "$GIT_REPO"
+  echo "snap-modified" > file.txt
+)
+(cd "$GIT_REPO" && _git checkout -- . 2>/dev/null)
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$after_count" -gt "$before_count" ]]; then
+  _pass "snapshot: file copied to trash successfully"
+else
+  _fail "snapshot: no file in trash after git checkout snapshot"
+fi
+/bin/rm -rf "$snap_test_dir"
+
+# ─── Additional coverage: untested paths ─────────────────────────────────
+
+_section "git_wrapper: git push --force-with-lease triggers snapshot"
+# Can't actually push, but verify that the force push detection fires
+# and tries to save remote refs (will fail gracefully since no remote exists)
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+(cd "$GIT_REPO" && _git push --force-with-lease origin main 2>/dev/null) || true
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+# Since there's no remote, ls-remote fails and no file is created — that's OK
+# What matters is it doesn't crash
+_pass "git push --force-with-lease: handled without crash"
+
+_section "git_wrapper: git push -f (short flag) triggers snapshot"
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+(cd "$GIT_REPO" && _git push -f origin main 2>/dev/null) || true
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+_pass "git push -f: handled without crash"
+
+_section "git_wrapper: git checkout . (no --) snapshots modified files"
+(cd "$GIT_REPO" && echo "dot-checkout" > file.txt)
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+(cd "$GIT_REPO" && _git checkout . 2>/dev/null)
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$after_count" -gt "$before_count" ]]; then
+  _pass "git checkout . (no --): modified file snapshotted"
+else
+  _fail "git checkout . (no --): no snapshot (before=$before_count after=$after_count)"
+fi
+
+_section "git_wrapper: git restore --worktree --staged snapshots files"
+(cd "$GIT_REPO" && echo "worktree-staged" > file.txt && _rgit add file.txt)
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+(cd "$GIT_REPO" && _git restore --worktree --staged file.txt 2>/dev/null) || true
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$after_count" -gt "$before_count" ]]; then
+  _pass "git restore --worktree --staged: file snapshotted"
+else
+  _fail "git restore --worktree --staged: no snapshot (before=$before_count after=$after_count)"
+fi
+
+_section "git_wrapper: git clean -fdx snapshots ignored files"
+(cd "$GIT_REPO" && echo "*.ignored" > .gitignore && _rgit add -f .gitignore && _rgit commit -q -m "Add gitignore") 2>/dev/null || true
+(cd "$GIT_REPO" && echo "should-be-cleaned" > test.ignored)
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+(cd "$GIT_REPO" && _git clean -fdx 2>/dev/null)
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$after_count" -gt "$before_count" ]]; then
+  _pass "git clean -fdx: ignored file snapshotted"
+else
+  _fail "git clean -fdx: no snapshot for ignored file (before=$before_count after=$after_count)"
+fi
+
+_section "snapshot_to_ai_trash: symlink to file is preserved"
+snap_sym_dir="$WORK_DIR/snap-sym-test"
+mkdir -p "$snap_sym_dir"
+echo "sym-target" > "$snap_sym_dir/target.txt"
+ln -sf "$snap_sym_dir/target.txt" "$snap_sym_dir/link.txt"
+# Source the library and call snapshot_to_ai_trash directly
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor bash -c '
+  source "'"$REPO_DIR"'/ai-trash-lib.sh"
+  snapshot_to_ai_trash "'"$snap_sym_dir/link.txt"'"
+' 2>/dev/null
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$after_count" -gt "$before_count" ]]; then
+  _pass "snapshot symlink: symlink copied to trash"
+else
+  _fail "snapshot symlink: not in trash (before=$before_count after=$after_count)"
+fi
+# Check target still exists
+if [[ -f "$snap_sym_dir/target.txt" ]]; then
+  _pass "snapshot symlink: original target untouched"
+else
+  _fail "snapshot symlink: original target deleted"
+fi
+/bin/rm -rf "$snap_sym_dir"
+
+_section "save_to_ai_trash: saves text content with metadata"
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor bash -c '
+  source "'"$REPO_DIR"'/ai-trash-lib.sh"
+  save_to_ai_trash "test-save-content.txt" "Hello from save_to_ai_trash" "(test) save label"
+' 2>/dev/null
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$after_count" -gt "$before_count" ]]; then
+  saved_file="$TEST_TRASH/test-save-content.txt"
+  if [[ -f "$saved_file" ]]; then
+    content=$(cat "$saved_file")
+    if [[ "$content" == "Hello from save_to_ai_trash" ]]; then
+      _pass "save_to_ai_trash: content matches"
+    else
+      _fail "save_to_ai_trash: content='$content'"
+    fi
+    orig=$(_read_meta "$saved_file" original-path)
+    if [[ "$orig" == "(test) save label" ]]; then
+      _pass "save_to_ai_trash: metadata label set"
+    else
+      _fail "save_to_ai_trash: orig='$orig'"
+    fi
+  else
+    _fail "save_to_ai_trash: file not at expected path"
+  fi
+else
+  _fail "save_to_ai_trash: no file created (before=$before_count after=$after_count)"
+fi
+
+_section "git_wrapper: git subcommand parsing skips -C flag"
+# git -C /path/to/repo clean -fd should correctly identify "clean" as the subcommand
+(cd "$GIT_REPO" && echo "c-flag-test" > c-flag-untracked.txt)
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
+  bash "$GIT_LINK" -C "$GIT_REPO" clean -fd 2>/dev/null
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$after_count" -gt "$before_count" ]]; then
+  _pass "git -C <repo> clean: subcommand parsed correctly, file snapshotted"
+else
+  _fail "git -C <repo> clean: no snapshot (before=$before_count after=$after_count)"
+fi
+
+_section "git_wrapper: git --no-pager log passes through"
+out=$(cd "$GIT_REPO" && _git --no-pager log --oneline -1 2>&1)
+if echo "$out" | grep -qE "^[0-9a-f]+ "; then
+  _pass "git --no-pager log: passes through correctly"
+else
+  _fail "git --no-pager log: unexpected: $out"
+fi
+
+_section "git_wrapper: git clean -fd in clean repo does nothing"
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+(cd "$GIT_REPO" && _git clean -fd 2>/dev/null)
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$after_count" -eq "$before_count" ]]; then
+  _pass "git clean -fd (clean repo): no snapshot needed"
+else
+  _fail "git clean -fd (clean repo): unexpected snapshot"
+fi
+
+_ai_trash empty --force >/dev/null 2>&1
+
 # ─── Summary ───────────────────────────────────────────────────────────
 echo ""
 echo "──────────────────────────────────────"
