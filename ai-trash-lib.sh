@@ -59,9 +59,9 @@ AI_PROCESS_ARGS=(
   "opencode"    # OpenCode           (also matched by AI_PROCESSES above)
 )
 
-# New wrapper toggles — default to true
-GIT_PROTECTION=true
-FIND_PROTECTION=true
+# New wrapper toggles — default to true, respect env overrides
+GIT_PROTECTION=${GIT_PROTECTION:-true}
+FIND_PROTECTION=${FIND_PROTECTION:-true}
 
 # Load user config — sourced so it overrides the defaults above.
 # To customise, edit: ~/.config/ai-trash/config.sh

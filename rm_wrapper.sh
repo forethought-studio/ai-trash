@@ -154,6 +154,12 @@ if [[ "$REAL_CMD" == "rmdir" ]]; then
   remove_empty_dir() {
     local dir="$1"
 
+    # Reject symlinks — real rmdir(2) doesn't follow symlinks
+    if [[ -L "$dir" ]]; then
+      echo "rmdir: $dir: Not a directory" >&2
+      return 1
+    fi
+
     if [[ ! -d "$dir" ]]; then
       echo "rmdir: $dir: No such file or directory" >&2
       return 1
