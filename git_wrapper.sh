@@ -225,22 +225,27 @@ case "$SUBCMD" in
 
   # ── git reset ──────────────────────────────────────────────────────
   reset)
-    # Only destructive with --hard (or --merge/--keep, but those are rare)
-    has_hard=false
+    # Destructive modes: --hard, --merge, --keep (all can overwrite working tree)
+    has_destructive_reset=false
+    reset_mode=""
     for arg in "${SUB_ARGS[@]}"; do
-      [[ "$arg" == "--hard" ]] && has_hard=true
+      case "$arg" in
+        --hard)  has_destructive_reset=true; reset_mode="hard" ;;
+        --merge) has_destructive_reset=true; reset_mode="merge" ;;
+        --keep)  has_destructive_reset=true; reset_mode="keep" ;;
+      esac
     done
 
-    if [[ "$has_hard" == true ]]; then
+    if [[ "$has_destructive_reset" == true ]]; then
       # Capture uncommitted state as a temporary stash object
       stash_sha=$("$REAL_GIT" stash create 2>/dev/null) || true
       if [[ -n "$stash_sha" ]]; then
         patch=$("$REAL_GIT" diff "$stash_sha" HEAD 2>/dev/null) || true
         if [[ -n "$patch" ]]; then
           save_to_ai_trash \
-            "git-reset-hard-$(date +%Y%m%d-%H%M%S).patch" \
+            "git-reset-${reset_mode}-$(date +%Y%m%d-%H%M%S).patch" \
             "$patch" \
-            "(git reset --hard) uncommitted changes in $TOPLEVEL"
+            "(git reset --${reset_mode}) uncommitted changes in $TOPLEVEL"
         fi
       fi
 

@@ -4,6 +4,9 @@ on:
   push:
     paths:
       - 'rm_wrapper.sh'
+      - 'ai-trash-lib.sh'
+      - 'git_wrapper.sh'
+      - 'find_wrapper.sh'
       - 'ai-trash'
       - 'ai-trash-cleanup'
       - 'config.default.sh'
@@ -12,6 +15,9 @@ on:
   pull_request:
     paths:
       - 'rm_wrapper.sh'
+      - 'ai-trash-lib.sh'
+      - 'git_wrapper.sh'
+      - 'find_wrapper.sh'
       - 'ai-trash'
       - 'ai-trash-cleanup'
       - 'config.default.sh'
