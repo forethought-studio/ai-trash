@@ -402,6 +402,11 @@ move_to_system_trash() {
       continue
     fi
 
+    if [[ -d "$f" ]] && is_empty_dir "$f"; then
+      /bin/rmdir "$f"
+      continue
+    fi
+
     # macOS boot-volume: use FSMoveObjectToTrashSync for Put Back support
     if [[ "$PLATFORM" == "Darwin" && "$(_stat_dev "$f")" == "$home_dev" ]]; then
       local rp
@@ -488,6 +493,11 @@ move_to_ai_trash() {
 
       if _matches_bypass_pattern "$abs"; then
         if [[ -d "$f" ]]; then /bin/rm -rf "$f"; else /bin/rm -f "$f"; fi
+        continue
+      fi
+
+      if [[ -d "$f" ]] && is_empty_dir "$f"; then
+        /bin/rmdir "$f"
         continue
       fi
 
@@ -602,6 +612,11 @@ PYEOF
 
     if _matches_bypass_pattern "$abs"; then
       if [[ -d "$f" ]]; then /bin/rm -rf "$f"; else /bin/rm -f "$f"; fi
+      continue
+    fi
+
+    if [[ -d "$f" ]] && is_empty_dir "$f"; then
+      /bin/rmdir "$f"
       continue
     fi
 
