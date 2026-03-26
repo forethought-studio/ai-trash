@@ -307,7 +307,7 @@ files=()
 empty_dirs=()  # for -d flag
 
 for path in "${operands[@]}"; do
-  if [[ -d "$path" ]]; then
+  if [[ ! -L "$path" ]] && [[ -d "$path" ]]; then
     if [[ "$has_recursive" == true ]]; then
       files+=("$path")  # mv handles directories recursively
     elif [[ "$has_dir_flag" == true ]]; then
@@ -320,7 +320,7 @@ for path in "${operands[@]}"; do
     fi
     # else: already errored above, skip
   else
-    # Regular files (existing or not - move_to_ai_trash handles missing)
+    # Regular files and symlinks (existing or not - move_to_ai_trash handles missing)
     files+=("$path")
   fi
 done
