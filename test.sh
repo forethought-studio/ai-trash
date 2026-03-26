@@ -20,6 +20,9 @@ FAILURES=0
 # ─── Isolated test environment ─────────────────────────────────────────
 # Work dir is under $HOME so files aren't caught by the /tmp disposable rule.
 # TEST_HOME has its own Trash hierarchy so we never touch the real system Trash.
+# Clean up any leftover test dirs from previously killed runs
+rm -rf "$HOME"/ai-trash-test-* 2>/dev/null || true
+
 WORK_DIR="$HOME/ai-trash-test-$$"
 TEST_HOME="$WORK_DIR/home"
 if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -318,14 +321,14 @@ else
   _fail "-v: filename not in output. Got: '$v_out'"
 fi
 
-_section "rm_wrapper: -d flag — empty directory trashed"
+_section "rm_wrapper: -d flag — empty directory permanently deleted"
 d_empty_d="$WORK_DIR/empty-dir-flag"
 mkdir -p "$d_empty_d"
 _rm -d "$d_empty_d"
-if ls "$TEST_TRASH/" 2>/dev/null | grep -q "empty-dir-flag"; then
-  _pass "-d: empty dir moved to ai-trash"
+if [[ ! -d "$d_empty_d" ]]; then
+  _pass "-d: empty dir permanently deleted"
 else
-  _fail "-d: empty dir not in ai-trash. Contents: $(ls "$TEST_TRASH/" 2>/dev/null || echo 'empty')"
+  _fail "-d: empty dir still exists"
 fi
 
 _section "rm_wrapper: -d flag — non-empty directory errors"
@@ -377,14 +380,14 @@ _rmdir() {
   HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor bash "$RMDIR_LINK" "$@"
 }
 
-_section "rmdir_wrapper: empty directory goes to ai-trash"
+_section "rmdir_wrapper: empty directory permanently deleted"
 d_rmdir_e="$WORK_DIR/rmdir-empty"
 mkdir -p "$d_rmdir_e"
 _rmdir "$d_rmdir_e"
-if ls "$TEST_TRASH/" 2>/dev/null | grep -q "rmdir-empty"; then
-  _pass "rmdir: empty dir moved to ai-trash"
+if [[ ! -d "$d_rmdir_e" ]]; then
+  _pass "rmdir: empty dir permanently deleted"
 else
-  _fail "rmdir: empty dir not in ai-trash. Contents: $(ls "$TEST_TRASH/" 2>/dev/null || echo 'empty')"
+  _fail "rmdir: empty dir still exists"
 fi
 
 _section "rmdir_wrapper: non-empty directory errors"
@@ -415,10 +418,10 @@ if echo "$rmdir_v_out" | grep -q "rmdir-verbose"; then
 else
   _fail "rmdir -v: name not in output. Got: '$rmdir_v_out'"
 fi
-if ls "$TEST_TRASH/" 2>/dev/null | grep -q "rmdir-verbose"; then
-  _pass "rmdir -v: directory moved to ai-trash"
+if [[ ! -d "$d_rmdir_v" ]]; then
+  _pass "rmdir -v: directory permanently deleted"
 else
-  _fail "rmdir -v: directory not in ai-trash"
+  _fail "rmdir -v: directory still exists"
 fi
 
 _section "rmdir_wrapper: -p flag removes parent chain"

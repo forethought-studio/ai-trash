@@ -682,5 +682,5 @@ save_to_ai_trash() {
 # ─── Helper: check if directory is empty ───────────────────────────────
 is_empty_dir() {
   local dir="$1"
-  [[ -d "$dir" ]] && [[ -z "$(ls -A "$dir" 2>/dev/null)" ]]
+  [[ ! -L "$dir" ]] && [[ -d "$dir" ]] && [[ -z "$(ls -A "$dir" 2>/dev/null)" ]]
 }
