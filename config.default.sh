@@ -121,6 +121,36 @@ FIND_PROTECTION=true
 # FIND_PROTECTION=false
 
 
+# BYPASS TRASH PATTERNS
+# ----------------------
+# Files whose resolved absolute path matches any pattern here are permanently
+# deleted (/bin/rm) instead of going to ai-trash. Use this for files that have
+# zero recovery value so they don't bloat the trash.
+#
+# Patterns are extended regular expressions (ERE), matched with bash =~.
+# $HOME is expanded at config-load time when written inside double quotes.
+# A pattern without ^ or $ anchors matches anywhere in the path.
+#
+BYPASS_TRASH_PATTERNS=(
+  # macOS temp dir — mktemp outputs from /var/folders/; cleaned by OS on reboot
+  "^/private/var/folders/"
+  "^/var/folders/"
+  "^/tmp/"
+
+  # Git transient lock and state files — contain no data, never worth restoring
+  "/\.git/index\.lock$"
+  "/\.git/MERGE_HEAD$"
+  "/\.git/CHERRY_PICK_HEAD$"
+  "/\.git/REVERT_HEAD$"
+  "/\.git/BISECT_HEAD$"
+  "/\.git/ORIG_HEAD$"
+
+  # Examples — uncomment to enable:
+  # "$HOME/ai-trash-test-[0-9]"   # ai-trash own test suite temp home dirs
+  # "vendor/composer/[0-9a-f]{8}$"  # PHP Composer internal cache files
+)
+
+
 # ADDING YOUR OWN TOOLS
 # ----------------------
 # If an AI tool you use isn't listed above, add it to the appropriate section:

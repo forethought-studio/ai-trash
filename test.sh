@@ -2407,6 +2407,61 @@ fi
 
 _ai_trash empty --force >/dev/null 2>&1
 
+# ─── BYPASS_TRASH_PATTERNS ─────────────────────────────────────────────
+
+_section "bypass_trash_patterns: matched file is permanently deleted"
+_set_mode selective
+# Append a pattern that matches a canary file in WORK_DIR
+echo 'BYPASS_TRASH_PATTERNS=("^'"$WORK_DIR"'/bypass-canary")' >> "$TEST_CONF_DIR/config.sh"
+bypass_canary="$WORK_DIR/bypass-canary.txt"
+echo "canary" > "$bypass_canary"
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+_rm "$bypass_canary"
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ ! -f "$bypass_canary" ]] && [[ "$after_count" -eq "$before_count" ]]; then
+  _pass "bypass: matched file permanently deleted (not trashed)"
+elif [[ ! -f "$bypass_canary" ]]; then
+  _fail "bypass: file gone but ended up in trash (count changed from $before_count to $after_count)"
+else
+  _fail "bypass: file still exists"
+fi
+
+_section "bypass_trash_patterns: non-matching file still goes to trash"
+_set_mode selective
+echo 'BYPASS_TRASH_PATTERNS=("^/no/match/here")' >> "$TEST_CONF_DIR/config.sh"
+bypass_other="$WORK_DIR/bypass-other.txt"
+echo "other" > "$bypass_other"
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+_rm "$bypass_other"
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ ! -f "$bypass_other" ]] && [[ "$after_count" -gt "$before_count" ]]; then
+  _pass "bypass: non-matching file correctly trashed"
+else
+  _fail "bypass: non-matching file not trashed (count $before_count -> $after_count, exists=$([ -f "$bypass_other" ] && echo yes || echo no))"
+fi
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "bypass_trash_patterns: default lock file pattern (.git/index.lock)"
+_set_mode selective
+# Default config.default.sh has /\.git/index\.lock$ pattern enabled
+fake_git_dir="$WORK_DIR/fake-repo/.git"
+mkdir -p "$fake_git_dir"
+lock_file="$fake_git_dir/index.lock"
+echo "" > "$lock_file"
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+_rm "$lock_file"
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ ! -f "$lock_file" ]] && [[ "$after_count" -eq "$before_count" ]]; then
+  _pass "bypass: .git/index.lock permanently deleted by default pattern"
+elif [[ ! -f "$lock_file" ]]; then
+  _fail "bypass: lock file gone but ended up in trash"
+else
+  _fail "bypass: lock file still exists"
+fi
+/bin/rm -rf "$WORK_DIR/fake-repo"
+
+_ai_trash empty --force >/dev/null 2>&1
+
 # ─── Summary ───────────────────────────────────────────────────────────
 echo ""
 echo "──────────────────────────────────────"

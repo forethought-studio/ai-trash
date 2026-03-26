@@ -63,6 +63,9 @@ AI_PROCESS_ARGS=(
 GIT_PROTECTION=${GIT_PROTECTION:-true}
 FIND_PROTECTION=${FIND_PROTECTION:-true}
 
+# Bypass patterns — empty by default; populated from user config
+BYPASS_TRASH_PATTERNS=()
+
 # Load user config — sourced so it overrides the defaults above.
 # To customise, edit: ~/.config/ai-trash/config.sh
 # shellcheck source=/dev/null
@@ -225,6 +228,19 @@ _build_process_chain() {
   printf '%s' "$chain"
 }
 
+# ─── Bypass pattern check ──────────────────────────────────────────────
+# Returns 0 if the resolved absolute path matches any BYPASS_TRASH_PATTERNS entry.
+# Patterns are ERE matched with bash =~. $HOME is already expanded at config
+# source time when patterns are written with double-quoted "$HOME/..." syntax.
+_matches_bypass_pattern() {
+  local abs="$1" pattern
+  for pattern in "${BYPASS_TRASH_PATTERNS[@]:-}"; do
+    [[ -z "$pattern" ]] && continue
+    [[ "$abs" =~ $pattern ]] && return 0
+  done
+  return 1
+}
+
 # ─── Platform helpers ──────────────────────────────────────────────────
 _stat_dev()  { [[ "$PLATFORM" == "Darwin" ]] && stat -f %d "$1" 2>/dev/null || stat -c %d "$1" 2>/dev/null; }
 _stat_size() { [[ "$PLATFORM" == "Darwin" ]] && stat -f %z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null; }
@@ -381,6 +397,11 @@ move_to_system_trash() {
     abs=$(realpath "$f" 2>/dev/null || echo "$f")
     [[ -f "$f" || -L "$f" ]] && sz=$(_stat_size "$f")
 
+    if _matches_bypass_pattern "$abs"; then
+      if [[ -d "$f" ]]; then /bin/rm -rf "$f"; else /bin/rm -f "$f"; fi
+      continue
+    fi
+
     # macOS boot-volume: use FSMoveObjectToTrashSync for Put Back support
     if [[ "$PLATFORM" == "Darwin" && "$(_stat_dev "$f")" == "$home_dev" ]]; then
       local rp
@@ -464,6 +485,12 @@ move_to_ai_trash() {
       fi
       local abs="" sz=""
       abs=$(realpath "$f" 2>/dev/null || echo "$f")
+
+      if _matches_bypass_pattern "$abs"; then
+        if [[ -d "$f" ]]; then /bin/rm -rf "$f"; else /bin/rm -f "$f"; fi
+        continue
+      fi
+
       if [[ "$(_stat_dev "$f")" == "$home_dev" ]]; then
         [[ -f "$f" || -L "$f" ]] && sz=$(_stat_size "$f")
         boot_srcs+=("$f"); boot_abs+=("$abs"); boot_sizes+=("$sz")
@@ -572,6 +599,12 @@ PYEOF
     fi
     local abs="" sz=""
     abs=$(realpath "$f" 2>/dev/null || echo "$f")
+
+    if _matches_bypass_pattern "$abs"; then
+      if [[ -d "$f" ]]; then /bin/rm -rf "$f"; else /bin/rm -f "$f"; fi
+      continue
+    fi
+
     [[ -f "$f" || -L "$f" ]] && sz=$(_stat_size "$f")
     _mv_file_to_ai_trash_dir "$f" "$abs" "$deleted_at" "$deleted_by" "$deleted_proc" "$sz" "$proc_chain" \
       || result=1
