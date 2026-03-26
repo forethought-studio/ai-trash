@@ -275,7 +275,7 @@ case "${1:-}" in
   list)              cmd_list ;;
   restore)    shift; cmd_restore "$@" ;;
   empty)      shift; cmd_empty "$@" ;;
-  version|--version|-V) echo "ai-trash 1.6.1" ;;
+  version|--version|-V) echo "ai-trash 1.6.2" ;;
   help|--help|-h|"") _usage ;;
   *) echo "$PROG: unknown command '$1'" >&2; _usage >&2; exit 1 ;;
 esac
