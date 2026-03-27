@@ -138,6 +138,10 @@ BYPASS_TRASH_PATTERNS=(
   "^/private/tmp/"
   "^/tmp/"
 
+  # macOS system Trash — mktemp-style ephemeral files that ended up in ~/.Trash
+  # (common in safe mode when tools delete temp files). Never worth recovering.
+  "$HOME/\.Trash/tmp\."
+
   # Git transient lock and state files — contain no data, never worth restoring
   "/\.git/index\.lock$"
   "/\.git/MERGE_HEAD$"
