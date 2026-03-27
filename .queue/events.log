@@ -14,3 +14,7 @@
 
 {"task_id":"t20260322T213701Z-rw282t","from_stage":"current","to_stage":"done","timestamp_utc":"2026-03-24T17:34:09Z","action":"move","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
 
+{"task_id":"t20260321T204209Z-ol212j","from_stage":"current","to_stage":"blocked","reason":"forethought-s HN account has only 1 karma — need more karma before posting Show HN to avoid shadowban/flagging. Draft is ready in .internal/marketing-research.md.","timestamp_utc":"2026-03-26T22:54:04Z","action":"move","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
+
+{"task_id":"t20260321T204209Z-sbp47i","from_stage":"current","to_stage":"blocked","reason":"HN account still locked — draft ready in .internal/marketing-research.md under 'Reply draft for claude-file-recovery HN thread'. Post manually once account is unlocked.","timestamp_utc":"2026-03-27T06:18:37Z","action":"move","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
+
