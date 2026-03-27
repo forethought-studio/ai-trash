@@ -156,6 +156,9 @@ BYPASS_TRASH_PATTERNS=(
   # ssh-copy-id temp files — ephemeral, created and discarded by the command
   "/\.ssh/ssh-copy-id\."
 
+  # node_modules — reinstalled instantly with npm/yarn/bun install; never worth recovering
+  "/node_modules/"
+
   # Examples — uncomment to enable:
   # "vendor/composer/[0-9a-f]{8}$"  # PHP Composer internal cache files
 )
