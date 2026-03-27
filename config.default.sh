@@ -159,8 +159,16 @@ BYPASS_TRASH_PATTERNS=(
   # node_modules — reinstalled instantly with npm/yarn/bun install; never worth recovering
   "/node_modules/"
 
+  # Playwright browser binaries (chromium, webkit, firefox) — large, auto-downloaded on demand
+  "/ms-playwright/"
+
+  # Gradle daemon — process lock/state files, auto-recreated on next build
+  "/\.gradle/daemon"
+
   # Examples — uncomment to enable:
-  # "vendor/composer/[0-9a-f]{8}$"  # PHP Composer internal cache files
+  # "vendor/composer/[0-9a-f]{8}$"              # PHP Composer internal cache files
+  # "/Library/Application Support/Claude/"       # Claude Electron app cache (macOS)
+  # "/ggml-"                                     # Whisper/llama.cpp ML model weights
 )
 
 

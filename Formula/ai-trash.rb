@@ -1,8 +1,8 @@
 class AiTrash < Formula
   desc "Transparent rm/rmdir replacement that routes files to a recoverable trash"
   homepage "https://github.com/forethought-studio/ai-trash"
-  url "https://github.com/forethought-studio/ai-trash/archive/refs/tags/v1.6.5.tar.gz"
-  sha256 "26fd3c2378cdc190285a05d796d82d364cb338da367c5cbaf4e0b2feb189589e"
+  url "https://github.com/forethought-studio/ai-trash/archive/refs/tags/v1.6.7.tar.gz"
+  sha256 "68045952d9ba2be33a27c044738ef7a6d1998037d85e82774eff1b0c117e6aef"
   license "MIT"
 
   # macOS only — relies on xattr, launchctl, and macOS Trash conventions
@@ -45,6 +45,6 @@ class AiTrash < Formula
   end
 
   test do
-    assert_match "ai-trash 1.6.5", shell_output("#{bin}/ai-trash version")
+    assert_match "ai-trash 1.6.7", shell_output("#{bin}/ai-trash version")
   end
 end
