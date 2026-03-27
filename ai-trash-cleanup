@@ -1,16 +1,22 @@
 #!/bin/bash
-# ai-trash-cleanup – purge ai-trash entries older than 30 days
+# ai-trash-cleanup – purge ai-trash entries older than RETENTION_DAYS (default: 30)
 
 PLATFORM=$(uname -s)
 
+# Load user config to pick up RETENTION_DAYS (and any future settings).
+# shellcheck source=/dev/null
+CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/ai-trash/config.sh"
+RETENTION_DAYS=30
+[[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
+
 if [[ "$PLATFORM" == "Darwin" ]]; then
-  # Purge xattr-tagged items in ~/.Trash/ older than 30 days
+  # Purge xattr-tagged items in ~/.Trash/ older than RETENTION_DAYS days
   while IFS= read -r -d '' item; do
     xattr -p com.ai-trash.original-path "$item" >/dev/null 2>&1 && /bin/rm -rf "$item"
-  done < <(find "$HOME/.Trash" -maxdepth 1 -mindepth 1 -mtime +30 -print0 2>/dev/null)
+  done < <(find "$HOME/.Trash" -maxdepth 1 -mindepth 1 -mtime +"$RETENTION_DAYS" -print0 2>/dev/null)
 else
-  # Linux: purge items in ~/.local/share/Trash/ai-trash/ older than 30 days
+  # Linux: purge items in ~/.local/share/Trash/ai-trash/ older than RETENTION_DAYS days
   AI_TRASH="$HOME/.local/share/Trash/ai-trash"
   [[ -d "$AI_TRASH" ]] || exit 0
-  find "$AI_TRASH" -maxdepth 1 -mindepth 1 -mtime +30 -exec /bin/rm -rf {} \;
+  find "$AI_TRASH" -maxdepth 1 -mindepth 1 -mtime +"$RETENTION_DAYS" -exec /bin/rm -rf {} \;
 fi

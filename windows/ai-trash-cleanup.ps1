@@ -1,11 +1,21 @@
-# ai-trash-cleanup.ps1 — purge ai-trash entries older than 30 days
+# ai-trash-cleanup.ps1 — purge ai-trash entries older than RETENTION_DAYS (default: 30)
 #
 # Registered as a Task Scheduler task by install.ps1 to run every 6 hours.
 # Can also be run manually at any time.
 
 param(
-    [int]$DaysOld = 30
+    [int]$DaysOld = -1   # -1 means "read from config"
 )
+
+# Load user config to pick up $RETENTION_DAYS.
+$CONFIG_FILE = "$env:USERPROFILE\.config\ai-trash\config.ps1"
+$RETENTION_DAYS = 30
+if (Test-Path -LiteralPath $CONFIG_FILE) {
+    . $CONFIG_FILE
+}
+
+# CLI override takes precedence; otherwise use config value.
+if ($DaysOld -lt 0) { $DaysOld = $RETENTION_DAYS }
 
 $MANIFEST_PATH = "$env:USERPROFILE\.config\ai-trash\manifest.json"
 $cutoff        = (Get-Date).AddDays(-$DaysOld)

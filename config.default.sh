@@ -172,6 +172,19 @@ BYPASS_TRASH_PATTERNS=(
 )
 
 
+# TRASH RETENTION
+# ----------------
+# How many days to keep trashed items before the cleanup scheduler permanently
+# deletes them. The scheduler runs every 6 hours; items older than this
+# threshold are purged on the next run.
+#
+# 30 days is the default — long enough to catch most accidental deletions,
+# short enough to avoid unbounded disk growth. Raise it if you want a longer
+# safety window; lower it (e.g. 7) if disk space is a concern.
+#
+RETENTION_DAYS=30
+
+
 # ADDING YOUR OWN TOOLS
 # ----------------------
 # If an AI tool you use isn't listed above, add it to the appropriate section:

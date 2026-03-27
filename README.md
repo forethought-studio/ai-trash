@@ -19,7 +19,7 @@ AI agents are useful but occasionally delete the wrong file. By the time you not
 - **Windows**: a PowerShell `Remove-Item` function is dot-sourced from `$PROFILE` and routes deleted files to the **Windows Recycle Bin** via `Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile`. A JSON manifest at `%USERPROFILE%\.config\ai-trash\manifest.json` tracks each deletion so `ai-trash list/restore/empty` can find and recover items. Explorer's native "Restore" also works, since the files are in the real Recycle Bin.
 - Each trashed item keeps its original filename. Name collisions are handled Finder-style: `file (2).txt`, `file (3).txt`.
 - Metadata is stored as extended attributes on the file itself: original path, deletion time (UTC), who deleted it, and original size.
-- A LaunchAgent runs every 6 hours and permanently purges items older than 30 days.
+- A LaunchAgent runs every 6 hours and permanently purges items older than `RETENTION_DAYS` (default: 30 days, configurable in `~/.config/ai-trash/config.sh`).
 - **Daemon-safe**: if `$HOME` is unset or points to `/var/root` (system launchd daemons), the wrapper falls through to real `rm`. Non-interactive contexts (pipes, cron) never hang on `-i`/`-I` prompts.
 
 ## Protection modes

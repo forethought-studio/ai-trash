@@ -502,6 +502,33 @@ else
   _fail "ai-trash-cleanup: recent item unexpectedly purged"
 fi
 
+_section "ai-trash-cleanup: respects RETENTION_DAYS from config"
+# Set a 7-day retention in config, then trash a file and age it to 8 days.
+# Cleanup should purge it even though it's less than 30 days old.
+cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
+echo "RETENTION_DAYS=7" >> "$TEST_CONF_DIR/config.sh"
+f_cleanup_custom="$WORK_DIR/cleanup-custom.txt"
+echo "custom" > "$f_cleanup_custom"
+_rm "$f_cleanup_custom"
+_cleanup_custom_item=$(ls "$TEST_TRASH/" 2>/dev/null | grep "^cleanup-custom.txt" | head -1 || true)
+if [[ -n "$_cleanup_custom_item" ]]; then
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    touch -t "$(date -v-8d +%Y%m%d%H%M)" "$TEST_TRASH/$_cleanup_custom_item"
+  else
+    touch -t "$(date -d '8 days ago' +%Y%m%d%H%M)" "$TEST_TRASH/$_cleanup_custom_item"
+  fi
+  HOME="$TEST_HOME" bash "$REPO_DIR/ai-trash-cleanup"
+  if ! ls "$TEST_TRASH/" 2>/dev/null | grep -q "^cleanup-custom.txt"; then
+    _pass "ai-trash-cleanup: 8-day-old item purged with RETENTION_DAYS=7"
+  else
+    _fail "ai-trash-cleanup: 8-day-old item not purged despite RETENTION_DAYS=7"
+  fi
+else
+  _fail "ai-trash-cleanup: cleanup-custom.txt not found in trash (setup failed)"
+fi
+# Restore default config
+cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
+
 # Clear items added by gap-coverage tests
 _ai_trash empty --force >/dev/null 2>&1
 
