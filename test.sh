@@ -481,7 +481,7 @@ if [[ -n "$_cleanup_old_item" ]]; then
   else
     touch -t "$(date -d '31 days ago' +%Y%m%d%H%M)" "$TEST_TRASH/$_cleanup_old_item"
   fi
-  HOME="$TEST_HOME" bash "$REPO_DIR/ai-trash-cleanup"
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/ai-trash-cleanup"
   if ! ls "$TEST_TRASH/" 2>/dev/null | grep -q "^cleanup-old.txt"; then
     _pass "ai-trash-cleanup: 31-day-old item purged"
   else
@@ -495,7 +495,7 @@ _section "ai-trash-cleanup: preserves items newer than 30 days"
 f_cleanup_new="$WORK_DIR/cleanup-new.txt"
 echo "new" > "$f_cleanup_new"
 _rm "$f_cleanup_new"
-HOME="$TEST_HOME" bash "$REPO_DIR/ai-trash-cleanup"
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/ai-trash-cleanup"
 if ls "$TEST_TRASH/" 2>/dev/null | grep -q "cleanup-new.txt"; then
   _pass "ai-trash-cleanup: recent item preserved"
 else
@@ -503,9 +503,8 @@ else
 fi
 
 _section "ai-trash-cleanup: respects RETENTION_DAYS from config"
-# Set a 7-day retention in config, then trash a file and age it to 10 days.
+# Set a 7-day retention in config, then trash a file and age it to 8 days.
 # Cleanup should purge it even though it's less than 30 days old.
-# We use 10 days (not 8) to avoid boundary issues with find -mtime rounding.
 cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
 echo "RETENTION_DAYS=7" >> "$TEST_CONF_DIR/config.sh"
 f_cleanup_custom="$WORK_DIR/cleanup-custom.txt"
@@ -514,15 +513,15 @@ _rm "$f_cleanup_custom"
 _cleanup_custom_item=$(ls "$TEST_TRASH/" 2>/dev/null | grep "^cleanup-custom.txt" | head -1 || true)
 if [[ -n "$_cleanup_custom_item" ]]; then
   if [[ "$(uname -s)" == "Darwin" ]]; then
-    touch -t "$(date -v-10d +%Y%m%d%H%M)" "$TEST_TRASH/$_cleanup_custom_item"
+    touch -t "$(date -v-8d +%Y%m%d%H%M)" "$TEST_TRASH/$_cleanup_custom_item"
   else
-    touch -t "$(date -d '10 days ago' +%Y%m%d%H%M)" "$TEST_TRASH/$_cleanup_custom_item"
+    touch -t "$(date -d '8 days ago' +%Y%m%d%H%M)" "$TEST_TRASH/$_cleanup_custom_item"
   fi
   HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/ai-trash-cleanup"
   if ! ls "$TEST_TRASH/" 2>/dev/null | grep -q "^cleanup-custom.txt"; then
-    _pass "ai-trash-cleanup: 10-day-old item purged with RETENTION_DAYS=7"
+    _pass "ai-trash-cleanup: 8-day-old item purged with RETENTION_DAYS=7"
   else
-    _fail "ai-trash-cleanup: 10-day-old item not purged despite RETENTION_DAYS=7"
+    _fail "ai-trash-cleanup: 8-day-old item not purged despite RETENTION_DAYS=7"
   fi
 else
   _fail "ai-trash-cleanup: cleanup-custom.txt not found in trash (setup failed)"
@@ -991,7 +990,7 @@ f_cleanup_preserved="$WORK_DIR/cleanup-preserved.txt"
 echo "preserved" > "$f_cleanup_preserved"
 _rm "$f_cleanup_preserved"
 before_cleanup_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
-HOME="$TEST_HOME" bash "$REPO_DIR/ai-trash-cleanup"
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/ai-trash-cleanup"
 after_cleanup_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
 if [[ "$before_cleanup_count" -eq "$after_cleanup_count" ]]; then
   _pass "cleanup preserve: recent items untouched"
