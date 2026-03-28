@@ -2492,6 +2492,25 @@ fi
 
 _ai_trash empty --force >/dev/null 2>&1
 
+_section "bypass_trash_patterns: default .framework pattern"
+_set_mode selective
+# Default config.default.sh has \.framework(/|$) pattern enabled
+fake_framework="$WORK_DIR/SomeKit.framework"
+mkdir -p "$fake_framework"
+echo "binary" > "$fake_framework/SomeKit"
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+_rm -rf "$fake_framework"
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ ! -d "$fake_framework" ]] && [[ "$after_count" -eq "$before_count" ]]; then
+  _pass "bypass: .framework bundle permanently deleted by default pattern"
+elif [[ ! -d "$fake_framework" ]]; then
+  _fail "bypass: .framework gone but ended up in trash"
+else
+  _fail "bypass: .framework still exists"
+fi
+
+_ai_trash empty --force >/dev/null 2>&1
+
 # ─── Summary ───────────────────────────────────────────────────────────
 echo ""
 echo "──────────────────────────────────────"

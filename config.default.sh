@@ -165,6 +165,9 @@ BYPASS_TRASH_PATTERNS=(
   # Gradle daemon — process lock/state files, auto-recreated on next build
   "/\.gradle/daemon"
 
+  # macOS .framework bundles — system/Xcode artifacts, large, managed by the OS
+  "\.framework(/|$)"
+
   # Examples — uncomment to enable:
   # "vendor/composer/[0-9a-f]{8}$"              # PHP Composer internal cache files
   # "/Library/Application Support/Claude/"       # Claude Electron app cache (macOS)
