@@ -2511,6 +2511,23 @@ fi
 
 _ai_trash empty --force >/dev/null 2>&1
 
+_section "bypass_trash_patterns: default .provisionprofile pattern"
+_set_mode selective
+provprofile="$WORK_DIR/embedded.provisionprofile"
+echo "profile" > "$provprofile"
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+_rm "$provprofile"
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ ! -f "$provprofile" ]] && [[ "$after_count" -eq "$before_count" ]]; then
+  _pass "bypass: .provisionprofile permanently deleted by default pattern"
+elif [[ ! -f "$provprofile" ]]; then
+  _fail "bypass: .provisionprofile gone but ended up in trash"
+else
+  _fail "bypass: .provisionprofile still exists"
+fi
+
+_ai_trash empty --force >/dev/null 2>&1
+
 # ─── Summary ───────────────────────────────────────────────────────────
 echo ""
 echo "──────────────────────────────────────"

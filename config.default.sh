@@ -168,6 +168,9 @@ BYPASS_TRASH_PATTERNS=(
   # macOS .framework bundles — system/Xcode artifacts, large, managed by the OS
   "\.framework(/|$)"
 
+  # Xcode provisioning profiles — code-signing artifacts, auto-managed by Xcode
+  "\.provisionprofile$"
+
   # Examples — uncomment to enable:
   # "vendor/composer/[0-9a-f]{8}$"              # PHP Composer internal cache files
   # "/Library/Application Support/Claude/"       # Claude Electron app cache (macOS)
