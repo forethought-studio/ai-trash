@@ -18,3 +18,9 @@
 
 {"task_id":"t20260321T204209Z-sbp47i","from_stage":"current","to_stage":"blocked","reason":"HN account still locked — draft ready in .internal/marketing-research.md under 'Reply draft for claude-file-recovery HN thread'. Post manually once account is unlocked.","timestamp_utc":"2026-03-27T06:18:37Z","action":"move","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
 
+{"task_id":"t20260321T204209Z-ol212j","from_stage":"blocked","to_stage":"done","timestamp_utc":"2026-03-28T11:41:58Z","action":"move","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
+
+{"task_id":"t20260321T204209Z-sbp47i","from_stage":"blocked","to_stage":"done","timestamp_utc":"2026-03-28T11:42:08Z","action":"move","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
+
+{"task_id":"t20260328T114506Z-5j2efr","stage":"current","summary":"SEO review: optimize GitHub README copy, topics/tags, and description for discoverability. Consider whether a simple landing page (GitHub Pages) would help. Target searches like 'AI deleted my files', 'safe rm replacement', 'claude code rm'.","timestamp_utc":"2026-03-28T11:45:06Z","action":"add","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
+
