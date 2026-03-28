@@ -2528,6 +2528,211 @@ fi
 
 _ai_trash empty --force >/dev/null 2>&1
 
+_section "bypass_trash_patterns: default __pycache__ pattern"
+_set_mode selective
+pycache_dir="$WORK_DIR/proj/__pycache__"
+mkdir -p "$pycache_dir"
+echo "bytecode" > "$pycache_dir/utils.cpython-312.pyc"
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+_rm -rf "$pycache_dir"
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ ! -d "$pycache_dir" ]] && [[ "$after_count" -eq "$before_count" ]]; then
+  _pass "bypass: __pycache__ permanently deleted by default pattern"
+elif [[ ! -d "$pycache_dir" ]]; then
+  _fail "bypass: __pycache__ gone but ended up in trash"
+else
+  _fail "bypass: __pycache__ still exists"
+fi
+/bin/rm -rf "$WORK_DIR/proj"
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "bypass_trash_patterns: default .pyc pattern"
+_set_mode selective
+pyc_dir="$WORK_DIR/proj/src"
+mkdir -p "$pyc_dir"
+pyc_file="$pyc_dir/module.pyc"
+echo "bytecode" > "$pyc_file"
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+_rm "$pyc_file"
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ ! -f "$pyc_file" ]] && [[ "$after_count" -eq "$before_count" ]]; then
+  _pass "bypass: .pyc permanently deleted by default pattern"
+elif [[ ! -f "$pyc_file" ]]; then
+  _fail "bypass: .pyc gone but ended up in trash"
+else
+  _fail "bypass: .pyc still exists"
+fi
+/bin/rm -rf "$WORK_DIR/proj"
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "bypass_trash_patterns: default .DS_Store pattern"
+_set_mode selective
+ds_dir="$WORK_DIR/proj"
+mkdir -p "$ds_dir"
+ds_file="$ds_dir/.DS_Store"
+echo "dsstore" > "$ds_file"
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+_rm "$ds_file"
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ ! -f "$ds_file" ]] && [[ "$after_count" -eq "$before_count" ]]; then
+  _pass "bypass: .DS_Store permanently deleted by default pattern"
+elif [[ ! -f "$ds_file" ]]; then
+  _fail "bypass: .DS_Store gone but ended up in trash"
+else
+  _fail "bypass: .DS_Store still exists"
+fi
+/bin/rm -rf "$WORK_DIR/proj"
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "bypass_trash_patterns: default /DerivedData/ pattern"
+_set_mode selective
+dd_dir="$WORK_DIR/Library/Developer/Xcode/DerivedData/MyApp-abc123"
+mkdir -p "$dd_dir"
+echo "build" > "$dd_dir/Build.db"
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+_rm -rf "$dd_dir"
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ ! -d "$dd_dir" ]] && [[ "$after_count" -eq "$before_count" ]]; then
+  _pass "bypass: /DerivedData/ permanently deleted by default pattern"
+elif [[ ! -d "$dd_dir" ]]; then
+  _fail "bypass: /DerivedData/ gone but ended up in trash"
+else
+  _fail "bypass: /DerivedData/ still exists"
+fi
+/bin/rm -rf "$WORK_DIR/Library"
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "bypass_trash_patterns: default .class pattern"
+_set_mode selective
+class_dir="$WORK_DIR/proj/out"
+mkdir -p "$class_dir"
+class_file="$class_dir/Main.class"
+echo "cafebabe" > "$class_file"
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+_rm "$class_file"
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ ! -f "$class_file" ]] && [[ "$after_count" -eq "$before_count" ]]; then
+  _pass "bypass: .class permanently deleted by default pattern"
+elif [[ ! -f "$class_file" ]]; then
+  _fail "bypass: .class gone but ended up in trash"
+else
+  _fail "bypass: .class still exists"
+fi
+/bin/rm -rf "$WORK_DIR/proj"
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "bypass_trash_patterns: default /Pods/ pattern"
+_set_mode selective
+pods_dir="$WORK_DIR/proj/Pods/AFNetworking"
+mkdir -p "$pods_dir"
+echo "pod" > "$pods_dir/AFNetworking.h"
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+_rm -rf "$WORK_DIR/proj/Pods"
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ ! -d "$pods_dir" ]] && [[ "$after_count" -eq "$before_count" ]]; then
+  _pass "bypass: /Pods/ permanently deleted by default pattern"
+elif [[ ! -d "$pods_dir" ]]; then
+  _fail "bypass: /Pods/ gone but ended up in trash"
+else
+  _fail "bypass: /Pods/ still exists"
+fi
+/bin/rm -rf "$WORK_DIR/proj"
+
+_ai_trash empty --force >/dev/null 2>&1
+
+# ─── ai-trash suggest ──────────────────────────────────────────────────
+
+_section "ai-trash suggest: empty trash"
+_ai_trash empty --force >/dev/null 2>&1
+out=$(_ai_trash suggest)
+if echo "$out" | grep -q "empty"; then
+  _pass "suggest: empty trash message"
+else
+  _fail "suggest: expected empty message, got: $out"
+fi
+
+_section "ai-trash suggest: shows prefix-based suggestions"
+# Trash 12 items tagged with paths sharing a common prefix with variable
+# numeric suffixes — exactly the pattern suggest should detect.
+_set_mode selective
+for i in $(seq 1 12); do
+  f="$WORK_DIR/suggest-prefix-$i.txt"
+  echo "data" > "$f"
+  _rm "$f"
+done
+# Tag them with paths like /Users/testuser/proj-build-001/src/main.c, .../build-002/..., etc.
+idx=0
+for item in "$TEST_TRASH"/suggest-prefix-*; do
+  [[ -e "$item" ]] || continue
+  idx=$((idx + 1))
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    xattr -w com.ai-trash.original-path "/Users/testuser/proj-build-${idx}/src/main.c" "$item"
+    xattr -w com.ai-trash.original-size "4096" "$item"
+  else
+    sidecar="$(dirname "$item")/.$(basename "$item").ai-trash"
+    if [[ -f "$sidecar" ]]; then
+      sed -i.bak "s|^original-path=.*|original-path=/Users/testuser/proj-build-${idx}/src/main.c|" "$sidecar"
+      echo "original-size=4096" >> "$sidecar"
+      /bin/rm -f "${sidecar}.bak"
+    fi
+  fi
+done
+out=$(_ai_trash suggest)
+if printf '%s' "$out" | grep -q "/proj-build-"; then
+  _pass "suggest: directory component pattern suggested"
+else
+  _fail "suggest: expected /proj-build- suggestion, got: $(printf '%s' "$out" | head -1)"
+fi
+# Strategy 2: full-path-structure pattern should also appear (same items share /src/main.c suffix)
+if printf '%s' "$out" | grep -q 'main\.c'; then
+  _pass "suggest: full-path-structure pattern suggested"
+else
+  _fail "suggest: expected full-path-structure pattern with main.c, got: $out"
+fi
+if printf '%s' "$out" | grep -q "BYPASS_TRASH_PATTERNS"; then
+  _pass "suggest: config snippet shown"
+else
+  _fail "suggest: config snippet missing from output: $out"
+fi
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "ai-trash suggest: already-bypassed patterns excluded"
+# Trash files whose original paths match existing bypass patterns
+# These should be excluded from suggestions
+for i in 1 2 3 4 5; do
+  f="$WORK_DIR/suggest-node-$i.txt"
+  echo "data" > "$f"
+  _rm "$f"
+done
+for item in "$TEST_TRASH"/suggest-node-*; do
+  [[ -e "$item" ]] || continue
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    xattr -w com.ai-trash.original-path "/Users/user/proj/node_modules/pkg${RANDOM}/index.js" "$item"
+    xattr -w com.ai-trash.original-size "1024" "$item"
+  else
+    sidecar="$(dirname "$item")/.$(basename "$item").ai-trash"
+    if [[ -f "$sidecar" ]]; then
+      sed -i.bak "s|^original-path=.*|original-path=/home/user/proj/node_modules/pkg${RANDOM}/index.js|" "$sidecar"
+      echo "original-size=1024" >> "$sidecar"
+      /bin/rm -f "${sidecar}.bak"
+    fi
+  fi
+done
+out=$(_ai_trash suggest)
+if echo "$out" | grep -q "node_modules"; then
+  _fail "suggest: node_modules should be excluded (already bypassed), got: $out"
+else
+  _pass "suggest: already-bypassed pattern excluded"
+fi
+
+_ai_trash empty --force >/dev/null 2>&1
+
 # ─── Summary ───────────────────────────────────────────────────────────
 echo ""
 echo "──────────────────────────────────────"

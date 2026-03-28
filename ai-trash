@@ -24,6 +24,7 @@ Usage: $PROG <command> [options]
 Commands:
   status                       Show summary of AI trash contents
   list                         List all items with deletion time and original path
+  suggest                      Analyze trash and suggest bypass patterns
   restore <name>               Restore item to its original location
   empty [--force]              Permanently delete all items
   empty --older-than <days>    Permanently delete items older than N days
@@ -268,11 +269,172 @@ cmd_status() {
   printf "Location: %s\n" "$TRASH_DIR"
 }
 
+# ─── suggest ──────────────────────────────────────────────────────────
+
+cmd_suggest() {
+  # Load ai-trash-lib.sh for _matches_bypass_pattern and BYPASS_TRASH_PATTERNS
+  local lib_dir
+  lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # shellcheck source=ai-trash-lib.sh
+  source "$lib_dir/ai-trash-lib.sh"
+
+  local _has_item=false
+  while IFS= read -r -d '' _; do _has_item=true; break; done < <(_each_ai_trash_item)
+  if [[ "$_has_item" != true ]]; then
+    echo "AI trash is empty — nothing to analyze."
+    return 0
+  fi
+
+  # Collect original paths and sizes
+  local tmp_data
+  tmp_data=$(mktemp)
+  trap 'rm -f "$tmp_data"' RETURN
+
+  local total_items=0
+  while IFS= read -r -d '' item; do
+    local orig_path raw_size
+    orig_path=$(_xattr com.ai-trash.original-path "$item")
+    raw_size=$(_xattr com.ai-trash.original-size "$item")
+    [[ -z "$orig_path" ]] && continue
+    [[ -z "$raw_size" || ! "$raw_size" =~ ^[0-9]+$ ]] && raw_size=0
+
+    if _matches_bypass_pattern "$orig_path"; then
+      continue
+    fi
+
+    total_items=$(( total_items + 1 ))
+    printf '%s\t%s\n' "$orig_path" "$raw_size" >> "$tmp_data"
+  done < <(_each_ai_trash_item)
+
+  if [[ "$total_items" -eq 0 ]]; then
+    echo "Analyzed 0 items in AI trash — no bypass pattern suggestions."
+    return 0
+  fi
+
+  # Strategy 1: Directory component patterns — find path components with
+  # trailing variable suffixes (numbers, hex hashes). Use just the component
+  # name as an unanchored pattern — portable across machines.
+  # Strategy 2: Full-path-structure patterns — when many items share the same
+  # path suffix after a variable component, suggest a more specific pattern
+  # that includes that suffix (scalpel vs sledgehammer).
+  local tmp_agg
+  tmp_agg=$(mktemp)
+
+  awk -F'\t' '
+  {
+    path = $1
+    sz   = $2 + 0
+
+    # Split path into components and find the first one with a
+    # trailing variable suffix (numbers, hex hashes).
+    n = split(path, parts, "/")
+    for (i = 2; i <= n; i++) {
+      seg = parts[i]
+      if (match(seg, /[-_][0-9][0-9a-f]*$/)) {
+        # Extract just the stable part of this component name
+        component = substr(seg, 1, RSTART)
+        if (length(component) > 2) {
+          # Strategy 1: broad directory component pattern
+          print component "\t" sz "\t" path
+
+          # Strategy 2: if there is a path suffix after the variable
+          # component, emit a more specific key
+          if (i < n) {
+            suffix = ""
+            for (j = i + 1; j <= n; j++) {
+              suffix = suffix "/" parts[j]
+            }
+            print component suffix "\t" sz "\t" path
+          }
+        }
+        break
+      }
+    }
+  }
+  ' "$tmp_data" | sort -t$'\t' -k1,1 | awk -F'\t' '
+  # Aggregate by pattern key
+  {
+    pat = $1; sz = $2 + 0; ex = $3
+    if (!(pat in count)) { first[pat] = ex }
+    count[pat]++
+    total[pat] += sz
+  }
+  END {
+    for (pat in count) {
+      printf "%s\t%d\t%d\t%s\n", pat, count[pat], total[pat], first[pat]
+    }
+  }
+  ' | sort -t$'\t' -k2 -nr > "$tmp_agg"
+
+  # Display patterns with >= 10 matching items
+  local has_suggestions=false
+  local -a sugg_patterns=()
+  local -a sugg_lines=()
+
+  while IFS=$'\t' read -r key cnt total_sz example; do
+    (( cnt < 10 )) && continue
+
+    has_suggestions=true
+    local size_str
+    size_str=$(_fmt_size "$total_sz")
+
+    # Determine if this is a Strategy 1 (broad) or Strategy 2 (specific) key.
+    # Strategy 2 keys contain a "/" after the component name.
+    local component suffix pattern
+    if [[ "$key" == */* ]]; then
+      # Strategy 2: component/suffix — split at first /
+      component="${key%%/*}"
+      suffix="${key#*/}"
+      # Escape regex special chars in both parts
+      local esc_comp esc_suff
+      esc_comp=$(printf '%s' "$component" | sed 's/[.[\*^$+?{}|()]/\\&/g')
+      esc_suff=$(printf '%s' "/$suffix" | sed 's/[.[\*^$+?{}|()]/\\&/g')
+      pattern="/${esc_comp}.*${esc_suff}\$"
+    else
+      # Strategy 1: just the component
+      local escaped
+      escaped=$(printf '%s' "$key" | sed 's/[.[\*^$+?{}|()]/\\&/g')
+      pattern="/$escaped"
+    fi
+
+    sugg_patterns+=("$pattern")
+    sugg_lines+=("$(printf "  %-55s %5d  %7s   %s" "$pattern" "$cnt" "$size_str" "$example")")
+  done < "$tmp_agg"
+
+  rm -f "$tmp_agg"
+
+  if [[ "$has_suggestions" != true ]]; then
+    echo "Analyzed $total_items item(s) in AI trash — no bypass pattern suggestions."
+    return 0
+  fi
+
+  echo "Analyzed $total_items item(s) in AI trash."
+  echo ""
+  echo "Suggested bypass patterns:"
+  echo ""
+  printf "  %-55s %5s  %7s   %s\n" "PATTERN" "ITEMS" "SIZE" "EXAMPLE"
+  printf "  %-55s %5s  %7s   %s\n" \
+    "$(printf '%.0s-' {1..55})" "-----" "-------" "$(printf '%.0s-' {1..30})"
+
+  for line in "${sugg_lines[@]}"; do
+    echo "$line"
+  done
+
+  echo ""
+  echo "Add to ~/.config/ai-trash/config.sh:"
+  echo "  BYPASS_TRASH_PATTERNS+=("
+  for pat in "${sugg_patterns[@]}"; do
+    printf '    "%s"\n' "$pat"
+  done
+  echo "  )"
+}
+
 # ─── dispatch ──────────────────────────────────────────────────────────
 
 case "${1:-}" in
   status)            cmd_status ;;
   list)              cmd_list ;;
+  suggest)           cmd_suggest ;;
   restore)    shift; cmd_restore "$@" ;;
   empty)      shift; cmd_empty "$@" ;;
   version|--version|-V) echo "ai-trash 1.6.8" ;;
