@@ -24,3 +24,29 @@
 
 {"task_id":"t20260328T114506Z-5j2efr","stage":"current","summary":"SEO review: optimize GitHub README copy, topics/tags, and description for discoverability. Consider whether a simple landing page (GitHub Pages) would help. Target searches like 'AI deleted my files', 'safe rm replacement', 'claude code rm'.","timestamp_utc":"2026-03-28T11:45:06Z","action":"add","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
 
+{"task_id":"t20260324T124741Z-2jfpb2","from_stage":"current","to_stage":"in-progress","timestamp_utc":"2026-03-28T13:06:42Z","action":"move","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
+
+{"task_id":"t20260324T124741Z-2jfpb2","stage":"done","position":"end","timestamp_utc":"2026-03-28T13:07:17Z","action":"reorder","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
+
+{"task_id":"t20260328T114506Z-5j2efr","from_stage":"current","to_stage":"blocked","reason":"RUNNER ERROR: Claude failed 3 consecutive times with no output. NEEDS: manual investigation","timestamp_utc":"2026-03-28T13:53:40Z","action":"move","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
+
+{"task_id":"t20260324T124741Z-2jfpb2","from_stage":"done","to_stage":"current","timestamp_utc":"2026-03-28T14:03:49Z","action":"move","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
+
+{"task_id":"t20260324T124741Z-2jfpb2","from_stage":"current","to_stage":"blocked","reason":"RUNNER ERROR: Claude failed 3 consecutive times with no output. NEEDS: manual investigation","timestamp_utc":"2026-03-28T14:34:19Z","action":"move","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
+
+{"task_id":"t20260324T124741Z-2jfpb2","from_stage":"blocked","to_stage":"current","timestamp_utc":"2026-03-28T14:44:29Z","action":"move","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
+
+{"task_id":"t20260324T124741Z-2jfpb2","from_stage":"current","to_stage":"blocked","reason":"RUNNER ERROR: Claude failed 3 consecutive times with no output. NEEDS: manual investigation","timestamp_utc":"2026-03-28T15:09:27Z","action":"move","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
+
+{"task_id":"t20260324T124741Z-2jfpb2","from_stage":"blocked","to_stage":"current","timestamp_utc":"2026-03-28T16:37:43Z","action":"move","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
+
+{"task_id":"t20260324T124741Z-2jfpb2","from_stage":"current","to_stage":"in-progress","timestamp_utc":"2026-03-28T16:38:17Z","action":"move","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
+
+{"task_id":"t20260324T124741Z-2jfpb2","from_stage":"in-progress","to_stage":"done","timestamp_utc":"2026-03-28T16:38:48Z","action":"move","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
+
+{"task_id":"t20260324T124741Z-2jfpb2","timestamp_utc":"2026-03-28T19:23:16Z","action":"review-approve","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
+
+{"task_id":"t20260328T114506Z-5j2efr","from_stage":"blocked","to_stage":"current","timestamp_utc":"2026-03-29T21:46:16Z","action":"move","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
+
+{"task_id":"t20260328T114506Z-5j2efr","from_stage":"current","to_stage":"in-progress","timestamp_utc":"2026-03-29T21:47:25Z","action":"move","project_id":"03592e03-85b2-4909-aaee-5395103d977d","project_root":"/Users/user/dev/ai-trash"}
+

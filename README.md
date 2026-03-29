@@ -1,15 +1,15 @@
-# ai-trash
+# ai-trash — Recover files deleted by AI coding tools
 
 [![Test macOS / Linux](https://github.com/forethought-studio/ai-trash/actions/workflows/test-macos.yml/badge.svg)](https://github.com/forethought-studio/ai-trash/actions/workflows/test-macos.yml)
 [![Test Windows PowerShell](https://github.com/forethought-studio/ai-trash/actions/workflows/test-windows.yml/badge.svg)](https://github.com/forethought-studio/ai-trash/actions/workflows/test-windows.yml)
 
-A transparent `rm`/`Remove-Item` replacement for macOS, Linux, and Windows that routes deleted files to a recoverable trash folder instead of destroying them permanently — designed specifically for environments where AI coding assistants (Claude Code, Codex, Cursor, Copilot, etc.) delete files on your behalf.
+A safe `rm` replacement that intercepts file deletions by AI coding assistants — Claude Code, Codex, Cursor, Copilot, and others — and moves them to a recoverable trash instead of permanently destroying them. Works transparently on macOS, Linux, and Windows with zero workflow changes.
 
 ![ai-trash demo](assets/demo.gif)
 
 ## The problem
 
-AI agents are useful but occasionally delete the wrong file. By the time you notice, it's gone. `ai-trash` intercepts every `rm` call at the system level so there's always a recovery window, without changing how you or your scripts use `rm`.
+AI coding agents delete the wrong file more often than you'd expect. By the time you notice, `rm` has already destroyed it and there's no undo. `ai-trash` intercepts every `rm` call at the system level so deleted files are always recoverable, without changing how you or your scripts use `rm`.
 
 ## How it works
 
@@ -165,9 +165,29 @@ Both uninstallers remove all installed files and leave your trash contents intac
 - **Workaround for sandboxed apps:** Use absolute paths (`/bin/rm`, `/usr/bin/find`) instead of bare `rm`/`find`. This bypasses the wrapper entirely.
 - **Defense-in-depth:** If a partial sandbox allows the script to start, the wrappers detect `APP_SANDBOX_CONTAINER_ID` and pass through to the real binary immediately.
 
-## What about safe-rm?
+## Compared to other tools
 
-[safe-rm](https://launchpad.net/safe-rm) protects specific paths from being deleted at all — it doesn't trash anything. [trash](https://hasseg.org/trash/) is a standalone command that moves files to the macOS Trash but doesn't replace `rm`. Neither handles daemon safety, disposable classification, per-volume routing, recovery metadata, or the `ai-trash` CLI.
+| Tool | Trashes files | Replaces `rm` | AI-aware | Recovery CLI | Cross-platform |
+|------|:---:|:---:|:---:|:---:|:---:|
+| **ai-trash** | Yes | Yes | Yes | Yes | macOS, Linux, Windows |
+| [safe-rm](https://launchpad.net/safe-rm) | No (blocks deletion) | Yes | No | No | Linux |
+| [trash-cli](https://github.com/andreafrancia/trash-cli) | Yes | No | No | Yes | Linux |
+| [trash](https://hasseg.org/trash/) | Yes | No | No | No | macOS |
+| [rm-protection](https://github.com/alanzchen/rm-protection) | No (blocks deletion) | Yes | No | No | macOS, Linux |
+
+## FAQ
+
+**Claude Code / Cursor / Copilot deleted my files — can I get them back?**
+If ai-trash was installed before the deletion, run `ai-trash list` to see all recoverable files and `ai-trash restore <filename>` to put them back. If ai-trash wasn't installed yet, install it now to prevent future losses.
+
+**Does this slow down `rm`?**
+The overhead is a few milliseconds for the process-tree check. Build tools, CI pipelines, and interactive use are unaffected in practice.
+
+**Does it work with `find -delete` and `git clean`?**
+Yes. ai-trash also ships wrappers for `find` and `git` that intercept `-delete`, `git clean`, `git checkout -- .`, and `git reset --hard` when run by AI tools.
+
+**Can I use it as a general safe-rm for all deletions, not just AI?**
+Yes — set `MODE=safe` in `~/.config/ai-trash/config.sh` and every `rm` call (yours included) will go to the system Trash instead of being permanent.
 
 ## License
 
