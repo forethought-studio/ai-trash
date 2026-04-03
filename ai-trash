@@ -437,7 +437,7 @@ case "${1:-}" in
   suggest)           cmd_suggest ;;
   restore)    shift; cmd_restore "$@" ;;
   empty)      shift; cmd_empty "$@" ;;
-  version|--version|-V) echo "ai-trash 1.6.10" ;;
+  version|--version|-V) echo "ai-trash 1.6.11" ;;
   help|--help|-h|"") _usage ;;
   *) echo "$PROG: unknown command '$1'" >&2; _usage >&2; exit 1 ;;
 esac
