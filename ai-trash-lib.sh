@@ -81,41 +81,61 @@ _is_ai_process() {
     [[ "${!var:-}" == "$val" ]] && return 0
   done
 
-  # Tier 2: walk the full process tree up to PID 1 (launchd).
-  # One ps snapshot for tree navigation; targeted ps calls for args matching.
-  local ps_tree
-  ps_tree=$(ps -A -o pid=,ppid=,comm= 2>/dev/null) || return 1
-
-  local pid=$$
-  while true; do
-    local line ppid comm
-    line=$(echo "$ps_tree" | awk -v p="$pid" '$1+0==p+0{print; exit}')
-    [[ -z "$line" ]] && break
-
-    ppid=$(echo "$line" | awk '{print $2+0}')
-    comm=$(echo "$line" | awk '{print $3}')
-
-    # Match executable name against AI_PROCESSES
-    local proc
-    for proc in "${AI_PROCESSES[@]}"; do
-      [[ "$comm" == "$proc" ]] && return 0
-    done
-
-    # Match full command line against AI_PROCESS_ARGS (catches node/python-wrapped tools)
-    if [[ ${#AI_PROCESS_ARGS[@]} -gt 0 ]]; then
-      local args pattern
-      args=$(ps -p "$pid" -o args= 2>/dev/null || true)
-      for pattern in "${AI_PROCESS_ARGS[@]}"; do
-        [[ "$args" == *"$pattern"* ]] && return 0
-      done
+  # Tier 1.5: PPID-keyed file cache.
+  # When a build tool (make, configure) calls rm hundreds of times, every call
+  # has the same PPID and the same process ancestry. Cache the Tier 2 result so
+  # only the first call pays the ps|awk cost; subsequent calls read a tiny file.
+  # Format: "<exit_code> <parent_comm>" — comm is checked to guard against PID
+  # reuse (different process reusing the same PID would have a different comm).
+  local _cache="/tmp/.ai-trash-detect-$PPID"
+  if [[ -f "$_cache" ]]; then
+    local _cached_result _cached_comm _current_comm
+    read -r _cached_result _cached_comm < "$_cache" 2>/dev/null
+    _current_comm=$(ps -p $PPID -o comm= 2>/dev/null)
+    if [[ "$_cached_comm" == "$_current_comm" ]]; then
+      return "$_cached_result"
     fi
+    /bin/rm -f "$_cache"
+  fi
 
-    # Stop at PID 1 or if we've hit a loop
-    [[ "$ppid" -le 1 || "$ppid" == "$pid" ]] && break
-    pid="$ppid"
-  done
+  # Tier 2: single-fork process tree walk.
+  # Does the entire ancestor walk inside one ps|awk pipeline instead of forking
+  # awk/ps per ancestor (which cost ~0.5-0.7s per rm call).
+  local IFS='|'
+  local procs_str="${AI_PROCESSES[*]}"
+  local args_str="${AI_PROCESS_ARGS[*]}"
+  IFS=' '
 
-  return 1
+  ps -A -o pid=,ppid=,comm=,args= 2>/dev/null | awk \
+    -v "start=$$" \
+    -v "procs=$procs_str" \
+    -v "apats=$args_str" '
+    BEGIN { np=split(procs,p,"|"); na=split(apats,a,"|") }
+    {
+      id=$1+0; pp[id]=$2+0; cm[id]=$3
+      # args = everything after the 3rd whitespace-delimited field
+      match($0, /^[[:space:]]*[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]*/)
+      ar[id]=substr($0, RLENGTH+1)
+    }
+    END {
+      pid=start+0
+      while(pid>1) {
+        if(!(pid in cm)) exit 1
+        for(i=1;i<=np;i++) if(cm[pid]==p[i]) { exit 0 }
+        if(na>0) for(i=1;i<=na;i++) if(index(ar[pid],a[i])>0) { exit 0 }
+        if(pp[pid]<=1 || pp[pid]==pid) break
+        pid=pp[pid]
+      }
+      exit 1
+    }'
+  local _result=$?
+
+  # Cache the result keyed on PPID + parent's comm name
+  local _parent_comm
+  _parent_comm=$(ps -p $PPID -o comm= 2>/dev/null)
+  printf '%d %s\n' "$_result" "$_parent_comm" > "$_cache" 2>/dev/null
+
+  return "$_result"
 }
 
 # ─── Identify the AI process that triggered this deletion ─────────────
@@ -140,47 +160,48 @@ _detect_ai_process_command() {
     fi
   done
 
-  # Walk the process tree looking for the AI ancestor.
-  local ps_tree
-  ps_tree=$(ps -A -o pid=,ppid=,comm= 2>/dev/null) || { ps -p $PPID -o comm= 2>/dev/null; return; }
+  # Walk the process tree looking for the AI ancestor (single-fork).
+  local IFS='|'
+  local procs_str="${AI_PROCESSES[*]}"
+  local args_str="${AI_PROCESS_ARGS[*]}"
+  IFS=' '
 
-  local pid=$$
-  while true; do
-    local line ppid comm
-    line=$(echo "$ps_tree" | awk -v p="$pid" '$1+0==p+0{print; exit}')
-    [[ -z "$line" ]] && break
+  local result
+  result=$(ps -A -o pid=,ppid=,comm=,args= 2>/dev/null | awk \
+    -v "start=$$" \
+    -v "ppid_hint=$PPID" \
+    -v "procs=$procs_str" \
+    -v "apats=$args_str" '
+    BEGIN { np=split(procs,p,"|"); na=split(apats,a,"|") }
+    {
+      id=$1+0; pp[id]=$2+0; cm[id]=$3
+      match($0, /^[[:space:]]*[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]*/)
+      ar[id]=substr($0, RLENGTH+1)
+    }
+    END {
+      pid=start+0
+      while(pid>1) {
+        if(!(pid in cm)) break
+        c=cm[pid]
+        for(i=1;i<=np;i++) if(c==p[i]) { sub(/^[[:space:]]+/,"",ar[pid]); print ar[pid]; exit 0 }
+        if(na>0) { a_str=ar[pid]; for(i=1;i<=na;i++) if(index(a_str,a[i])>0) { sub(/^[[:space:]]+/,"",a_str); print a_str; exit 0 } }
+        if(pp[pid]<=1 || pp[pid]==pid) break
+        pid=pp[pid]
+      }
+      # Fallback: parent command
+      if(ppid_hint+0 in ar) {
+        cmd=ar[ppid_hint+0]
+        sub(/^[[:space:]]+/,"",cmd)
+        sub(/^-/,"",cmd)
+        if(cmd!="") print cmd " (unknown)"
+        else print "unknown"
+      } else print "unknown"
+      exit 1
+    }') && { printf '%s' "$result"; return; }
 
-    ppid=$(echo "$line" | awk '{print $2+0}')
-    comm=$(echo "$line" | awk '{print $3}')
-
-    for proc in "${AI_PROCESSES[@]}"; do
-      if [[ "$comm" == "$proc" ]]; then
-        # Found the AI process — print its full command line
-        ps -p "$pid" -o command= 2>/dev/null | sed 's/^ *//'
-        return
-      fi
-    done
-
-    if [[ ${#AI_PROCESS_ARGS[@]} -gt 0 ]]; then
-      local args pattern
-      args=$(ps -p "$pid" -o args= 2>/dev/null || true)
-      for pattern in "${AI_PROCESS_ARGS[@]}"; do
-        if [[ "$args" == *"$pattern"* ]]; then
-          printf '%s' "$args" | sed 's/^ *//'
-          return
-        fi
-      done
-    fi
-
-    [[ "$ppid" -le 1 || "$ppid" == "$pid" ]] && break
-    pid="$ppid"
-  done
-
-  # No AI process found — report the parent's full command line for forensics.
-  local parent_cmd
-  parent_cmd=$(ps -p $PPID -o command= 2>/dev/null | sed 's/^ *//; s/^-//')
-  if [[ -n "$parent_cmd" ]]; then
-    printf '%s (unknown)' "$parent_cmd"
+  # awk returned non-zero — result is the fallback label
+  if [[ -n "$result" ]]; then
+    printf '%s' "$result"
   else
     printf 'unknown'
   fi
