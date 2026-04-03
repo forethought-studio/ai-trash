@@ -30,6 +30,19 @@ MODE=selective
 # MODE=safe
 
 
+# FAST PATH  (selective mode only)
+# ------------------------------------------------
+# When enabled (default), rm/rmdir/unlink bypass the full process-tree
+# detection when no AI environment variables are set. This makes builds
+# (~./configure, make) almost instant but means standalone AI tools that
+# only set process names — not env vars — (aider, goose, etc.) won't be
+# detected. All major AI platforms (Claude Code, VS Code, Cursor, Windsurf,
+# Codex, Warp) set env vars and are always detected regardless.
+#
+# Set to false if you use a Tier-2-only AI tool and want full detection.
+# FAST_PATH=false
+
+
 # AI ENVIRONMENT VARIABLES  (selective mode only)
 # ------------------------------------------------
 # Checked before any process lookup — zero performance overhead.

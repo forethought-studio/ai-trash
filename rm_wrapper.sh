@@ -1,6 +1,36 @@
 #!/bin/bash
 # rm_wrapper.sh – transparent rm/rmdir/unlink replacement that routes files to ai-trash
 
+# ─── Fast path: skip library sourcing when clearly not AI ──────────────
+# When no AI environment variables are set and mode is selective (default),
+# bypass the entire library + process-tree detection. This cuts per-rm
+# overhead from ~0.4s to ~0.01s for build tools (./configure, make) that
+# call rm hundreds of times from a regular terminal.
+#
+# Tradeoff: standalone AI tools that ONLY set process names (not env vars)
+# are not detected here. All major AI platforms set env vars and are caught.
+# Set FAST_PATH=false in config to disable this and force full detection.
+if [[ -n "${HOME:-}" && "$HOME" != "/var/root" ]] \
+   && [[ -z "${APP_SANDBOX_CONTAINER_ID:-}" ]]; then
+  case "${TERM_PROGRAM:-}" in
+    cursor|vscode|windsurf|WarpTerminal) ;;
+    *)
+      if [[ "${CLAUDECODE:-}" != "1" ]] \
+         && [[ "${CODEX_SANDBOX:-}" != "seatbelt" ]] \
+         && [[ "${OPENCLAW_SHELL:-}" != "exec" ]]; then
+        _cfg="${XDG_CONFIG_HOME:-$HOME/.config}/ai-trash/config.sh"
+        if [[ ! -f "$_cfg" ]] || ! grep -qE 'MODE=.*safe|FAST_PATH=false' "$_cfg" 2>/dev/null; then
+          case "${0##*/}" in
+            rmdir*) exec /bin/rmdir "$@" ;;
+            unlink) exec /usr/bin/unlink "$@" ;;
+            *) exec /bin/rm "$@" ;;
+          esac
+        fi
+      fi
+      ;;
+  esac
+fi
+
 # Source shared library (same directory as this script, resolve symlinks)
 _WRAPPER_PATH="${BASH_SOURCE[0]}"
 while [[ -L "$_WRAPPER_PATH" ]]; do _WRAPPER_PATH=$(readlink "$_WRAPPER_PATH"); done

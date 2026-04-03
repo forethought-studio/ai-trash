@@ -11,9 +11,9 @@ demo.tape
 # VM testing screenshots
 vm_screen*.png
 
-# Queue runtime state
-.queue/queue.lock
-.backlog/taskwarrior/taskchampion.sqlite3
+# Landing page screenshots
+landing-*.png
 
-.backlog/taskwarrior/taskchampion.sqlite3-shm
-.backlog/taskwarrior/taskchampion.sqlite3-wal
+# Queue and backlog runtime state
+.queue/
+.backlog/
