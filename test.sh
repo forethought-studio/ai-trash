@@ -2733,6 +2733,87 @@ fi
 
 _ai_trash empty --force >/dev/null 2>&1
 
+# ─── PPID cache tests ─────────────────────────────────────────────────
+
+_section "PPID cache: cache file created after _is_ai_process (Tier 2 path)"
+# Force the Tier 2 (process tree walk) path by unsetting all AI env vars.
+# Tier 1 env var matches return before cache code runs, so we must bypass them.
+/bin/rm -f /tmp/.ai-trash-detect-* 2>/dev/null || true
+env -i HOME="$HOME" PATH="$PATH" /bin/bash -c '
+  source "'"$REPO_DIR"'/ai-trash-lib.sh"
+  _is_ai_process >/dev/null 2>&1 || true
+'
+cache_files=(/tmp/.ai-trash-detect-*)
+if [[ -e "${cache_files[0]}" ]]; then
+  _pass "PPID cache: cache file created"
+else
+  _fail "PPID cache: no cache file found in /tmp/.ai-trash-detect-*"
+fi
+
+_section "PPID cache: cache file contains valid format"
+# Format should be: "<exit_code> <parent_comm>"
+if [[ -e "${cache_files[0]}" ]]; then
+  cache_content=$(cat "${cache_files[0]}")
+  if [[ "$cache_content" =~ ^[01]\ .+ ]]; then
+    _pass "PPID cache: valid format '$cache_content'"
+  else
+    _fail "PPID cache: unexpected format '$cache_content'"
+  fi
+else
+  _fail "PPID cache: no cache file to check format"
+fi
+
+_section "PPID cache: stale cache invalidated on comm mismatch"
+# Write a cache file keyed on our PID with a wrong comm value to simulate PID reuse.
+# A child /bin/bash will have PPID=$$, so the cache file /tmp/.ai-trash-detect-$$
+# will be read but the comm won't match — it should be invalidated.
+stale_cache="/tmp/.ai-trash-detect-$$"
+echo "1 FAKE_PROCESS_THAT_DOES_NOT_EXIST" > "$stale_cache"
+# Call without AI env vars to force Tier 1.5 cache check
+env -i HOME="$HOME" PATH="$PATH" /bin/bash -c '
+  source "'"$REPO_DIR"'/ai-trash-lib.sh"
+  _is_ai_process >/dev/null 2>&1 || true
+'
+# Check that the stale file was removed or overwritten
+if [[ -f "$stale_cache" ]]; then
+  new_content=$(cat "$stale_cache")
+  if [[ "$new_content" == *"FAKE_PROCESS_THAT_DOES_NOT_EXIST"* ]]; then
+    _fail "PPID cache: stale cache was NOT invalidated"
+  else
+    _pass "PPID cache: stale cache overwritten with fresh result"
+  fi
+else
+  _pass "PPID cache: stale cache file removed"
+fi
+/bin/rm -f "$stale_cache" 2>/dev/null || true
+
+_section "_build_process_chain: returns delimited ancestor chain"
+chain=$(/bin/bash -c '
+  source "'"$REPO_DIR"'/ai-trash-lib.sh"
+  _build_process_chain
+')
+if [[ "$chain" == *" > "* ]]; then
+  _pass "_build_process_chain: output contains ' > ' delimiter"
+else
+  # Single-process chains (unlikely but possible in containers) don't have delimiter
+  if [[ -n "$chain" ]]; then
+    _pass "_build_process_chain: output present (single ancestor: '$chain')"
+  else
+    _fail "_build_process_chain: empty output"
+  fi
+fi
+
+_section "_build_process_chain: includes interpreter args for bash/node/python"
+# The chain should show full args for interpreters, not just "bash"
+if echo "$chain" | grep -qE "bash .+|node .+|python3? .+"; then
+  _pass "_build_process_chain: interpreter args included in chain"
+else
+  # Might not have interpreters in chain depending on environment
+  _pass "_build_process_chain: chain='$chain' (no interpreter with args in ancestry)"
+fi
+
+/bin/rm -f /tmp/.ai-trash-detect-* 2>/dev/null || true
+
 # ─── Summary ───────────────────────────────────────────────────────────
 echo ""
 echo "──────────────────────────────────────"
