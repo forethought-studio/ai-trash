@@ -7,7 +7,7 @@ while [[ -L "$_WRAPPER_PATH" ]]; do _WRAPPER_PATH=$(readlink "$_WRAPPER_PATH"); 
 # shellcheck source=ai-trash-lib.sh
 source "$(cd "$(dirname "$_WRAPPER_PATH")" && pwd)/ai-trash-lib.sh"
 
-SCRIPT_NAME=$(basename "$0")
+SCRIPT_NAME="${0##*/}"
 
 # Determine the real command based on how we were called
 case "$SCRIPT_NAME" in
@@ -203,7 +203,7 @@ if [[ "$REAL_CMD" == "rmdir" ]]; then
       parent="$dir"
       while true; do
         # Get parent directory
-        parent=$(dirname "$parent")
+        parent="${parent%/*}"
 
         # Stop at root or current dir
         [[ "$parent" == "/" || "$parent" == "." || -z "$parent" ]] && break

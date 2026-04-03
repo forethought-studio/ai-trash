@@ -210,43 +210,40 @@ _detect_ai_process_command() {
 # ─── Build the full process ancestor chain for forensics ─────────────
 # Returns full command lines: "bash /Users/user/bin/q list > zsh > claude > ..."
 _build_process_chain() {
-  local ps_tree chain="" pid=$$
-  ps_tree=$(ps -A -o pid=,ppid=,comm= 2>/dev/null) || return
-
-  while true; do
-    local line ppid comm
-    line=$(echo "$ps_tree" | awk -v p="$pid" '$1+0==p+0{print; exit}')
-    [[ -z "$line" ]] && break
-
-    ppid=$(echo "$line" | awk '{print $2+0}')
-    # Get the process label: for interpreters (bash, python3, node, etc.) include
-    # the script argument so "bash" becomes "bash /Users/user/bin/q list".
-    # For everything else, just the basename is enough.
-    local base_comm full_args
-    base_comm=$(echo "$line" | awk '{print $3}' | sed 's|.*/||; s/^-//')
-    case "$base_comm" in
-      bash|sh|zsh|dash|fish|python|python3|node|ruby|perl)
-        full_args=$(ps -p "$pid" -o args= 2>/dev/null | sed 's/^ *//; s/^-//' || true)
-        # Use full args only if short enough and adds info beyond the interpreter name
-        if [[ -n "$full_args" && ${#full_args} -le 120 && "$full_args" != "$base_comm" ]]; then
-          comm="$full_args"
+  # Single-fork: builds the full ancestor chain inside one ps|awk pipeline.
+  # For interpreters (bash, python3, node, etc.) includes the script argument.
+  ps -A -o pid=,ppid=,comm=,args= 2>/dev/null | awk \
+    -v "start=$$" '
+    BEGIN {
+      split("bash sh zsh dash fish python python3 node ruby perl", interps, " ")
+      for(i in interps) is_interp[interps[i]]=1
+    }
+    {
+      id=$1+0; pp[id]=$2+0
+      c=$3; sub(/.*\//,"",c); sub(/^-/,"",c)
+      cm[id]=c
+      match($0, /^[[:space:]]*[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]*/)
+      a=substr($0, RLENGTH+1)
+      sub(/^[[:space:]]+/,"",a); sub(/^-/,"",a)
+      ar[id]=a
+    }
+    END {
+      chain=""
+      pid=start+0
+      while(pid>1) {
+        if(!(pid in cm)) break
+        c=cm[pid]
+        if(c in is_interp && ar[pid]!="" && length(ar[pid])<=120 && ar[pid]!=c)
+          label=ar[pid]
         else
-          comm="$base_comm"
-        fi
-        ;;
-      *)
-        comm="$base_comm"
-        ;;
-    esac
-
-    [[ -n "$chain" ]] && chain="$chain > "
-    chain="$chain$comm"
-
-    [[ "$ppid" -le 1 || "$ppid" == "$pid" ]] && break
-    pid="$ppid"
-  done
-
-  printf '%s' "$chain"
+          label=c
+        if(chain!="") chain=chain " > "
+        chain=chain label
+        if(pp[pid]<=1 || pp[pid]==pid) break
+        pid=pp[pid]
+      }
+      printf "%s", chain
+    }'
 }
 
 # ─── Bypass pattern check ──────────────────────────────────────────────
@@ -280,7 +277,7 @@ _write_meta() {
   else
     printf 'original-path=%s\ndeleted-at=%s\ndeleted-by=%s\ndeleted-by-process=%s\noriginal-size=%s\nprocess-chain=%s\n' \
       "$orig_path" "$deleted_at" "$deleted_by" "$deleted_proc" "$orig_size" "$proc_chain" \
-      > "$(dirname "$file")/.$(basename "$file").ai-trash" 2>/dev/null || true
+      > "${file%/*}/.${file##*/}.ai-trash" 2>/dev/null || true
   fi
 }
 
@@ -450,7 +447,7 @@ move_to_system_trash() {
       continue
     fi
 
-    dest=$(get_unique_trash_path "$trash_dir" "$(basename "$f")")
+    dest=$(get_unique_trash_path "$trash_dir" "${f##*/}")
     if mv "$f" "$dest"; then
       _write_meta "$dest" "$abs" "$deleted_at" "$deleted_by" "$deleted_proc" "$sz" "$proc_chain"
       touch "$dest" 2>/dev/null
@@ -475,7 +472,7 @@ _mv_file_to_ai_trash_dir() {
     if [[ -d "$f" ]]; then /bin/rm -rf "$f"; else /bin/rm -f "$f"; fi
     return $?
   fi
-  dest=$(get_unique_trash_path "$trash_dir" "$(basename "$f")")
+  dest=$(get_unique_trash_path "$trash_dir" "${f##*/}")
   if mv "$f" "$dest"; then
     _write_meta "$dest" "$abs_path" "$deleted_at" "$deleted_by" "$deleted_proc" "$orig_size" "$proc_chain"
     touch "$dest" 2>/dev/null
@@ -668,7 +665,7 @@ snapshot_to_ai_trash() {
     local trash_dir dest
     trash_dir=$(get_trash_dir "$f")
     mkdir -p "$trash_dir" 2>/dev/null || continue
-    dest=$(get_unique_trash_path "$trash_dir" "$(basename "$f")")
+    dest=$(get_unique_trash_path "$trash_dir" "${f##*/}")
 
     if cp -a "$f" "$dest" 2>/dev/null || cp -R "$f" "$dest" 2>/dev/null; then
       _write_meta "$dest" "$abs" "$deleted_at" "$deleted_by" "$deleted_proc" "$sz" "$proc_chain"
