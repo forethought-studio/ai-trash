@@ -9,14 +9,19 @@ CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/ai-trash/config.sh"
 RETENTION_DAYS=30
 [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
 
+# find -mtime +N matches files with mtime strictly greater than N full 24h
+# periods ago (fractional days are truncated). To purge items >= N days old,
+# we need -mtime +((N-1)).  Guard against RETENTION_DAYS<=0.
+_mtime_arg=$(( RETENTION_DAYS > 0 ? RETENTION_DAYS - 1 : 0 ))
+
 if [[ "$PLATFORM" == "Darwin" ]]; then
   # Purge xattr-tagged items in ~/.Trash/ older than RETENTION_DAYS days
   while IFS= read -r -d '' item; do
     xattr -p com.ai-trash.original-path "$item" >/dev/null 2>&1 && /bin/rm -rf "$item"
-  done < <(find "$HOME/.Trash" -maxdepth 1 -mindepth 1 -mtime +"$RETENTION_DAYS" -print0 2>/dev/null)
+  done < <(find "$HOME/.Trash" -maxdepth 1 -mindepth 1 -mtime +"$_mtime_arg" -print0 2>/dev/null)
 else
   # Linux: purge items in ~/.local/share/Trash/ai-trash/ older than RETENTION_DAYS days
   AI_TRASH="$HOME/.local/share/Trash/ai-trash"
   [[ -d "$AI_TRASH" ]] || exit 0
-  find "$AI_TRASH" -maxdepth 1 -mindepth 1 -mtime +"$RETENTION_DAYS" -exec /bin/rm -rf {} \;
+  find "$AI_TRASH" -maxdepth 1 -mindepth 1 -mtime +"$_mtime_arg" -exec /bin/rm -rf {} \;
 fi
