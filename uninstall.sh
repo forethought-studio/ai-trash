@@ -80,9 +80,17 @@ for cmd in find; do
   fi
 done
 
+for cmd in rsync; do
+  target=$(readlink "$BIN/$cmd" 2>/dev/null || true)
+  if [[ "$target" == *rsync_wrapper* ]]; then
+    sudo rm -f "$BIN/$cmd"
+    echo "  removed $BIN/$cmd"
+  fi
+done
+
 # ─── Remove scripts ────────────────────────────────────────────────────
 
-for f in ai-trash-lib.sh rm_wrapper.sh git_wrapper.sh find_wrapper.sh ai-trash-cleanup ai-trash; do
+for f in ai-trash-lib.sh rm_wrapper.sh git_wrapper.sh find_wrapper.sh rsync_wrapper.sh ai-trash-cleanup ai-trash; do
   if [[ -f "$BIN/$f" ]]; then
     sudo rm -f "$BIN/$f"
     echo "  removed $BIN/$f"
@@ -100,10 +108,10 @@ for c in "${CANDIDATES[@]}"; do
   [[ "$c" == "$BIN" ]] && continue
   if [[ -f "$c/rm_wrapper.sh" ]] && grep -q "ai-trash" "$c/rm_wrapper.sh" 2>/dev/null; then
     echo "  removing stale install from $c"
-    for f in ai-trash-lib.sh rm_wrapper.sh git_wrapper.sh find_wrapper.sh ai-trash ai-trash-cleanup; do
+    for f in ai-trash-lib.sh rm_wrapper.sh git_wrapper.sh find_wrapper.sh rsync_wrapper.sh ai-trash ai-trash-cleanup; do
       sudo rm -f "$c/$f"
     done
-    for cmd in rm rmdir unlink git find; do
+    for cmd in rm rmdir unlink git find rsync; do
       target=$(readlink "$c/$cmd" 2>/dev/null || true)
       if [[ "$target" == *_wrapper* ]]; then
         sudo rm -f "$c/$cmd"

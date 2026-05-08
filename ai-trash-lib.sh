@@ -1,5 +1,5 @@
 # ai-trash-lib.sh — shared library for ai-trash wrappers
-# Sourced by rm_wrapper.sh, git_wrapper.sh, and find_wrapper.sh.
+# Sourced by rm_wrapper.sh, git_wrapper.sh, find_wrapper.sh, and rsync_wrapper.sh.
 # Do not execute directly.
 
 # Guard against double-sourcing
@@ -62,6 +62,8 @@ AI_PROCESS_ARGS=(
 # New wrapper toggles — default to true, respect env overrides
 GIT_PROTECTION=${GIT_PROTECTION:-true}
 FIND_PROTECTION=${FIND_PROTECTION:-true}
+RSYNC_PROTECTION=${RSYNC_PROTECTION:-true}
+RSYNC_PROTECT_ALL_LOCAL=${RSYNC_PROTECT_ALL_LOCAL:-false}
 
 # Bypass patterns — empty by default; populated from user config
 BYPASS_TRASH_PATTERNS=()
@@ -278,6 +280,16 @@ _write_meta() {
     printf 'original-path=%s\ndeleted-at=%s\ndeleted-by=%s\ndeleted-by-process=%s\noriginal-size=%s\nprocess-chain=%s\n' \
       "$orig_path" "$deleted_at" "$deleted_by" "$deleted_proc" "$orig_size" "$proc_chain" \
       > "${file%/*}/.${file##*/}.ai-trash" 2>/dev/null || true
+  fi
+}
+
+_write_meta_field() {
+  local file="$1" key="$2" value="$3"
+  [[ -z "$value" ]] && return 0
+  if [[ "$PLATFORM" == "Darwin" ]]; then
+    xattr -w "com.ai-trash.$key" "$value" "$file" >/dev/null 2>&1 || true
+  else
+    printf '%s=%s\n' "$key" "$value" >> "${file%/*}/.${file##*/}.ai-trash" 2>/dev/null || true
   fi
 }
 
@@ -674,6 +686,70 @@ snapshot_to_ai_trash() {
       result=1
     fi
   done
+  return $result
+}
+
+# ─── Import rsync --backup-dir output into ai-trash ───────────────────
+# Rsync writes pre-change destination files into a staging backup directory.
+# Move those backups into normal ai-trash storage and record the original
+# destination path so the existing restore command can put them back.
+import_rsync_backup_dir_to_ai_trash() {
+  local backup_dir="$1" dest_root="$2" dest_is_dir="${3:-true}" suffix="${4:-}"
+  local result=0
+
+  [[ -d "$backup_dir" ]] || return 0
+
+  local deleted_at deleted_by deleted_proc proc_chain
+  deleted_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  deleted_by=$(id -un)
+  deleted_proc=$(_detect_ai_process_command)
+  proc_chain=$(_build_process_chain)
+
+  local -a items=()
+  while IFS= read -r -d '' item; do
+    items+=("$item")
+  done < <(find "$backup_dir" -mindepth 1 ! -type d -print0 2>/dev/null)
+
+  local item rel orig_path sz trash_base trash_dir dest
+  for item in "${items[@]}"; do
+    rel="${item#$backup_dir/}"
+    [[ -n "$suffix" && "$rel" == *"$suffix" ]] && rel="${rel%"$suffix"}"
+
+    if [[ "$dest_is_dir" == true ]]; then
+      orig_path="${dest_root%/}/$rel"
+    elif [[ "$rel" == "$(basename "$dest_root")" ]]; then
+      orig_path="$dest_root"
+    else
+      orig_path="${dest_root%/}/$rel"
+    fi
+
+    if _matches_bypass_pattern "$orig_path"; then
+      /bin/rm -f "$item" 2>/dev/null || true
+      continue
+    fi
+
+    sz=""
+    [[ -f "$item" || -L "$item" ]] && sz=$(_stat_size "$item")
+
+    trash_base="$dest_root"
+    [[ -e "$trash_base" || -L "$trash_base" ]] || trash_base="$HOME"
+    trash_dir=$(get_trash_dir "$trash_base")
+    if ! mkdir -p "$trash_dir" 2>/dev/null; then
+      result=1
+      continue
+    fi
+
+    dest=$(get_unique_trash_path "$trash_dir" "$(basename "$orig_path")")
+    if mv "$item" "$dest"; then
+      _write_meta "$dest" "$orig_path" "$deleted_at" "$deleted_by" "$deleted_proc" "$sz" "$proc_chain"
+      _write_meta_field "$dest" "operation" "rsync-backup"
+      touch "$dest" 2>/dev/null
+    else
+      result=1
+    fi
+  done
+
+  /bin/rm -rf "$backup_dir" 2>/dev/null || true
   return $result
 }
 

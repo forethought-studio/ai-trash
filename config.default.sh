@@ -134,6 +134,24 @@ FIND_PROTECTION=true
 # FIND_PROTECTION=false
 
 
+# RSYNC PROTECTION
+# -----------------
+# When true, ai-trash intercepts AI-originated local rsync commands that can
+# delete destination files, runs them with rsync backups enabled, and imports
+# deleted/replaced destination files into ai-trash.
+# Commands that already specify --backup, --no-backup, or --backup-dir pass
+# through unchanged. Remote destinations pass through unchanged.
+#
+RSYNC_PROTECTION=true
+# RSYNC_PROTECTION=false
+
+# By default, only delete-capable rsync commands are protected. Set this to true
+# to preserve overwritten destination files for any AI-originated local rsync.
+#
+RSYNC_PROTECT_ALL_LOCAL=false
+# RSYNC_PROTECT_ALL_LOCAL=true
+
+
 # BYPASS TRASH PATTERNS
 # ----------------------
 # Files whose resolved absolute path matches any pattern here are permanently

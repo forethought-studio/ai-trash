@@ -9,14 +9,22 @@ class AiTrash < Formula
   depends_on :macos
 
   def install
+    bin.install "ai-trash-lib.sh"
     bin.install "rm_wrapper.sh"
+    bin.install "git_wrapper.sh"
+    bin.install "find_wrapper.sh"
+    bin.install "rsync_wrapper.sh"
     bin.install "ai-trash-cleanup"
     bin.install "ai-trash"
 
-    # Intercept rm and rmdir by symlinking into Homebrew's bin, which should
+    # Intercept commands by symlinking into Homebrew's bin, which should
     # appear before /bin in PATH after `brew shellenv` is sourced.
     bin.install_symlink "rm_wrapper.sh" => "rm"
     bin.install_symlink "rm_wrapper.sh" => "rmdir"
+    bin.install_symlink "rm_wrapper.sh" => "unlink"
+    bin.install_symlink "git_wrapper.sh" => "git"
+    bin.install_symlink "find_wrapper.sh" => "find"
+    bin.install_symlink "rsync_wrapper.sh" => "rsync"
   end
 
   service do
@@ -29,7 +37,7 @@ class AiTrash < Formula
 
   def caveats
     <<~EOS
-      ai-trash intercepts `rm` and `rmdir` by placing wrappers earlier in PATH.
+      ai-trash intercepts protected commands by placing wrappers earlier in PATH.
       Make sure Homebrew's bin comes before /bin in your PATH:
 
         export PATH="#{HOMEBREW_PREFIX}/bin:$PATH"
@@ -41,6 +49,7 @@ class AiTrash < Formula
       To verify the override is active:
 
         which rm   # should show #{opt_bin}/rm
+        which rsync # should show #{opt_bin}/rsync
     EOS
   end
 

@@ -99,6 +99,15 @@ _read_meta() {
     [[ -f "$sidecar" ]] && grep "^${key}=" "$sidecar" | cut -d= -f2- || true
   fi
 }
+
+_find_trash_item_by_orig() {
+  local want="$1" item
+  for item in "$TEST_TRASH"/*; do
+    [[ -e "$item" || -L "$item" ]] || continue
+    [[ "$(_read_meta "$item" original-path)" == "$want" ]] && { printf '%s\n' "$item"; return 0; }
+  done
+  return 1
+}
 if [[ -f "$item" ]]; then
   orig=$(_read_meta "$item" original-path)
   ts=$(_read_meta "$item" deleted-at)
@@ -1610,6 +1619,124 @@ else
   _fail "find -exec + -delete: no trash (before=$before_count after=$after_count)"
 fi
 /bin/rm -rf "$find_dir6"
+
+_ai_trash empty --force >/dev/null 2>&1
+
+# ─── rsync wrapper ───────────────────────────────────────────────────────
+RSYNC_LINK="$WORK_DIR/rsync_cmd"
+ln -sf "$REPO_DIR/rsync_wrapper.sh" "$RSYNC_LINK"
+
+_rsync() {
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
+    PATH="$WORK_DIR:$PATH" bash "$RSYNC_LINK" "$@"
+}
+
+if command -v rsync >/dev/null 2>&1; then
+  _section "rsync_wrapper: --delete backs up deleted and overwritten destination files"
+  rsync_src="$WORK_DIR/rsync-src"
+  rsync_dest="$WORK_DIR/rsync-dest"
+  mkdir -p "$rsync_src" "$rsync_dest/sub"
+  echo "new-content" > "$rsync_src/changed.txt"
+  echo "old" > "$rsync_dest/changed.txt"
+  echo "extra" > "$rsync_dest/sub/extra.txt"
+  before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+  _rsync -a --delete "$rsync_src/" "$rsync_dest/" 2>/dev/null
+  after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+  changed_backup=$(_find_trash_item_by_orig "$rsync_dest/changed.txt" || true)
+  extra_backup=$(_find_trash_item_by_orig "$rsync_dest/sub/extra.txt" || true)
+  if [[ "$after_count" -ge $((before_count + 2)) && -n "$changed_backup" && -n "$extra_backup" ]]; then
+    _pass "rsync --delete: destination backups imported to ai-trash"
+  else
+    _fail "rsync --delete: backups missing (before=$before_count after=$after_count changed='$changed_backup' extra='$extra_backup')"
+  fi
+  if [[ "$(cat "$rsync_dest/changed.txt" 2>/dev/null || true)" == "new-content" && ! -e "$rsync_dest/sub/extra.txt" ]]; then
+    _pass "rsync --delete: rsync result applied"
+  else
+    _fail "rsync --delete: destination state unexpected"
+  fi
+  if [[ "$(cat "$changed_backup" 2>/dev/null || true)" == "old" && "$(cat "$extra_backup" 2>/dev/null || true)" == "extra" ]]; then
+    _pass "rsync --delete: backup contents are pre-rsync versions"
+  else
+    _fail "rsync --delete: backup contents incorrect"
+  fi
+  op=$(_read_meta "$changed_backup" operation)
+  [[ "$op" == "rsync-backup" ]] && _pass "rsync --delete: operation metadata set" \
+    || _fail "rsync --delete: operation metadata='$op'"
+  /bin/rm -rf "$rsync_src" "$rsync_dest"
+
+  _section "rsync_wrapper: no --delete passes through by default"
+  rsync_src2="$WORK_DIR/rsync-src2"
+  rsync_dest2="$WORK_DIR/rsync-dest2"
+  mkdir -p "$rsync_src2" "$rsync_dest2"
+  echo "newer-content" > "$rsync_src2/file.txt"
+  echo "old" > "$rsync_dest2/file.txt"
+  before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+  _rsync -a "$rsync_src2/" "$rsync_dest2/" 2>/dev/null
+  after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$after_count" -eq "$before_count" && "$(cat "$rsync_dest2/file.txt")" == "newer-content" ]]; then
+    _pass "rsync default: non-delete sync passed through"
+  else
+    _fail "rsync default: unexpected trash/state (before=$before_count after=$after_count)"
+  fi
+  /bin/rm -rf "$rsync_src2" "$rsync_dest2"
+
+  _section "rsync_wrapper: RSYNC_PROTECT_ALL_LOCAL backs up overwrite without --delete"
+  rsync_src3="$WORK_DIR/rsync-src3"
+  rsync_dest3="$WORK_DIR/rsync-dest3"
+  rsync_conf3="$WORK_DIR/rsync-conf3"
+  mkdir -p "$rsync_src3" "$rsync_dest3" "$rsync_conf3/ai-trash"
+  cp "$REPO_DIR/config.default.sh" "$rsync_conf3/ai-trash/config.sh"
+  printf '\nRSYNC_PROTECT_ALL_LOCAL=true\n' >> "$rsync_conf3/ai-trash/config.sh"
+  echo "newer-content" > "$rsync_src3/file.txt"
+  echo "old" > "$rsync_dest3/file.txt"
+  before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="$rsync_conf3" TERM_PROGRAM=cursor \
+    PATH="$WORK_DIR:$PATH" bash "$RSYNC_LINK" -a "$rsync_src3/" "$rsync_dest3/" 2>/dev/null
+  after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+  all_local_backup=$(_find_trash_item_by_orig "$rsync_dest3/file.txt" || true)
+  if [[ "$after_count" -gt "$before_count" && -n "$all_local_backup" && "$(cat "$all_local_backup")" == "old" ]]; then
+    _pass "rsync all-local: overwrite backed up"
+  else
+    _fail "rsync all-local: backup missing (before=$before_count after=$after_count backup='$all_local_backup')"
+  fi
+  /bin/rm -rf "$rsync_src3" "$rsync_dest3" "$rsync_conf3"
+
+  _section "rsync_wrapper: existing --backup-dir passes through unchanged"
+  rsync_src4="$WORK_DIR/rsync-src4"
+  rsync_dest4="$WORK_DIR/rsync-dest4"
+  rsync_user_backup="$WORK_DIR/user-rsync-backup"
+  mkdir -p "$rsync_src4" "$rsync_dest4"
+  echo "newer-content" > "$rsync_src4/file.txt"
+  echo "old" > "$rsync_dest4/file.txt"
+  before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+  _rsync -a --delete --backup --backup-dir="$rsync_user_backup" "$rsync_src4/" "$rsync_dest4/" 2>/dev/null
+  after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$after_count" -eq "$before_count" && -f "$rsync_user_backup/file.txt" ]]; then
+    _pass "rsync existing backup: user backup behavior preserved"
+  else
+    _fail "rsync existing backup: pass-through failed (before=$before_count after=$after_count user_backup=$(test -f "$rsync_user_backup/file.txt" && echo yes || echo no))"
+  fi
+  /bin/rm -rf "$rsync_src4" "$rsync_dest4" "$rsync_user_backup"
+
+  _section "rsync_wrapper: remote destination passes through unchanged"
+  fake_rsync_dir="$WORK_DIR/fake-rsync"
+  mkdir -p "$fake_rsync_dir"
+  cat > "$fake_rsync_dir/rsync" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" > "$FAKE_RSYNC_LOG"
+EOF
+  chmod 755 "$fake_rsync_dir/rsync"
+  FAKE_RSYNC_LOG="$WORK_DIR/fake-rsync.log" HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
+    PATH="$fake_rsync_dir:$PATH" bash "$RSYNC_LINK" -a --delete "$WORK_DIR/" "host:/remote/path" 2>/dev/null || true
+  if [[ -f "$WORK_DIR/fake-rsync.log" ]] && ! grep -q -- "--backup-dir" "$WORK_DIR/fake-rsync.log"; then
+    _pass "rsync remote: no ai-trash backup options injected"
+  else
+    _fail "rsync remote: wrapper injected backup options or fake rsync did not run"
+  fi
+  /bin/rm -rf "$fake_rsync_dir" "$WORK_DIR/fake-rsync.log"
+else
+  _skip "rsync wrapper tests: rsync not installed"
+fi
 
 _ai_trash empty --force >/dev/null 2>&1
 

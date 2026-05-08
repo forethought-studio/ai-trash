@@ -19,6 +19,7 @@ AI coding agents delete the wrong file more often than you'd expect. By the time
 - **Windows**: a PowerShell `Remove-Item` function is dot-sourced from `$PROFILE` and routes deleted files to the **Windows Recycle Bin** via `Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile`. A JSON manifest at `%USERPROFILE%\.config\ai-trash\manifest.json` tracks each deletion so `ai-trash list/restore/empty` can find and recover items. Explorer's native "Restore" also works, since the files are in the real Recycle Bin.
 - Each trashed item keeps its original filename. Name collisions are handled Finder-style: `file (2).txt`, `file (3).txt`.
 - Metadata is stored as extended attributes on the file itself: original path, deletion time (UTC), who deleted it, and original size.
+- AI-originated `find -delete`, destructive `git` commands, and local `rsync --delete` are also protected. Rsync protection uses rsync backups, so destination files that are deleted or replaced by the sync can be restored.
 - A LaunchAgent runs every 6 hours and permanently purges items older than `RETENTION_DAYS` (default: 30 days, configurable in `~/.config/ai-trash/config.sh`).
 - **Daemon-safe**: if `$HOME` is unset or points to `/var/root` (system launchd daemons), the wrapper falls through to real `rm`. Non-interactive contexts (pipes, cron) never hang on `-i`/`-I` prompts.
 
@@ -86,6 +87,7 @@ The installer copies the scripts to `$env:USERPROFILE\.ai-trash\`, dot-sources t
 rm myfile.txt          # moves to ~/.Trash/ (macOS) or ~/.Trash/ai-trash/ (Linux) — recoverable
 rm -rf build/          # same — whole directory is recoverable
 find . -name "*.bak" | xargs rm   # works correctly — files are trashed, no hanging
+rsync -a --delete src/ dest/       # AI calls preserve deleted/replaced destination files
 ```
 
 ### What it looks like
