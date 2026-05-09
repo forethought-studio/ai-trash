@@ -129,6 +129,14 @@ _rsync_abs_path() {
 
 REAL_RSYNC=$(_find_real_rsync)
 
+# openrsync (Apple's BSD clone, default on macOS 15+) is stricter than GNU
+# rsync and fails with "fchownat: Operation not permitted" when --backup-dir
+# is used with -a, since it tries to preserve ownership on backup files.
+# We can't selectively disable -o for the backup copy only, so pass through.
+_rsync_is_openrsync() {
+  "$REAL_RSYNC" --version 2>&1 | head -1 | grep -qi openrsync
+}
+
 # ─── Guards ────────────────────────────────────────────────────────────
 if [[ -z "$HOME" || "$HOME" == "/var/root" ]]; then
   exec "$REAL_RSYNC" "$@"
@@ -139,6 +147,10 @@ if [[ -n "${APP_SANDBOX_CONTAINER_ID:-}" ]]; then
 fi
 
 if [[ "${RSYNC_PROTECTION:-true}" != true ]]; then
+  exec "$REAL_RSYNC" "$@"
+fi
+
+if _rsync_is_openrsync; then
   exec "$REAL_RSYNC" "$@"
 fi
 
