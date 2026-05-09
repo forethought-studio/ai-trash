@@ -1633,6 +1633,7 @@ _rsync() {
 
 if command -v rsync >/dev/null 2>&1; then
   _section "rsync_wrapper: --delete backs up deleted and overwritten destination files"
+  echo "  (rsync version: $(rsync --version 2>&1 | head -1))"
   rsync_src="$WORK_DIR/rsync-src"
   rsync_dest="$WORK_DIR/rsync-dest"
   mkdir -p "$rsync_src" "$rsync_dest/sub"
@@ -1640,7 +1641,13 @@ if command -v rsync >/dev/null 2>&1; then
   echo "old" > "$rsync_dest/changed.txt"
   echo "extra" > "$rsync_dest/sub/extra.txt"
   before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
-  _rsync -a --delete "$rsync_src/" "$rsync_dest/" 2>/dev/null
+  rsync_stderr_log="$WORK_DIR/rsync-stderr.log"
+  _rsync -a --delete "$rsync_src/" "$rsync_dest/" 2>"$rsync_stderr_log" || rsync_exit=$?
+  rsync_exit="${rsync_exit:-0}"
+  if [[ "$rsync_exit" -ne 0 ]]; then
+    echo "  rsync exited $rsync_exit; stderr:"
+    sed 's/^/    /' "$rsync_stderr_log" | head -20
+  fi
   after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
   changed_backup=$(_find_trash_item_by_orig "$rsync_dest/changed.txt" || true)
   extra_backup=$(_find_trash_item_by_orig "$rsync_dest/sub/extra.txt" || true)
