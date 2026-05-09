@@ -213,6 +213,11 @@ BYPASS_TRASH_PATTERNS=(
   "/DerivedData/"
   "\.xcresult(/|$)"
 
+  # Xcode "do not index" caches: ModuleCache.noindex, Index.noindex,
+  # CompilationCache.noindex, SDKStatCaches.noindex. Pure caches, regenerated
+  # on next build. Catches DerivedData-shaped trees with non-standard names.
+  "\.noindex(/|$)"
+
   # Java compiled bytecode — always regenerated from .java source
   "\.class$"
 
