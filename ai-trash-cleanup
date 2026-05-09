@@ -1,14 +1,22 @@
 #!/bin/bash
-# ai-trash-cleanup – purge ai-trash entries older than RETENTION_DAYS (default: 30)
+# ai-trash-cleanup – purge ai-trash entries older than RETENTION_DAYS, then
+# enforce MAX_TRASH_SIZE_GB by evicting the oldest items until the total
+# ai-trash footprint is under the cap.
 
 PLATFORM=$(uname -s)
 
-# Load user config to pick up RETENTION_DAYS (and any future settings).
+# Load user config to pick up RETENTION_DAYS, MAX_TRASH_SIZE_GB, etc.
 # shellcheck source=/dev/null
 CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/ai-trash/config.sh"
 RETENTION_DAYS=30
+MAX_TRASH_SIZE_GB=""           # empty = auto (5% of disk, capped at 50 GiB); 0 = disabled
+SIZE_EVICTION_GRACE_HOURS=24   # recent items exempt from size-cap eviction
 [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
 
+# Sanitize grace value: accept non-negative integers only; fall back to 24 otherwise.
+[[ "$SIZE_EVICTION_GRACE_HOURS" =~ ^[0-9]+$ ]] || SIZE_EVICTION_GRACE_HOURS=24
+
+# ─── Age-based purge ───────────────────────────────────────────────────
 # find -mtime +N matches files with mtime strictly greater than N full 24h
 # periods ago (fractional days are truncated). To purge items >= N days old,
 # we need -mtime +((N-1)).  Guard against RETENTION_DAYS<=0.
@@ -22,6 +30,86 @@ if [[ "$PLATFORM" == "Darwin" ]]; then
 else
   # Linux: purge items in ~/.local/share/Trash/ai-trash/ older than RETENTION_DAYS days
   AI_TRASH="$HOME/.local/share/Trash/ai-trash"
-  [[ -d "$AI_TRASH" ]] || exit 0
-  find "$AI_TRASH" -maxdepth 1 -mindepth 1 -mtime +"$_mtime_arg" -exec /bin/rm -rf {} \;
+  [[ -d "$AI_TRASH" ]] && \
+    find "$AI_TRASH" -maxdepth 1 -mindepth 1 -mtime +"$_mtime_arg" -exec /bin/rm -rf {} \;
 fi
+
+# ─── Size-cap enforcement ──────────────────────────────────────────────
+# Determine the cap.
+#   empty  : auto (5% of disk hosting $HOME, capped at 50 GiB)
+#   0      : disabled (skip size eviction entirely)
+#   N      : N GiB
+#
+# Test-only escape hatch: AI_TRASH_CAP_KB_OVERRIDE lets the test suite use a
+# tiny cap without writing gigabytes of data. Not for end-user use.
+if [[ -n "${AI_TRASH_CAP_KB_OVERRIDE:-}" ]]; then
+  cap_kb=$AI_TRASH_CAP_KB_OVERRIDE
+elif [[ -z "$MAX_TRASH_SIZE_GB" ]]; then
+  total_disk_kb=$(df -k "$HOME" 2>/dev/null | awk 'NR==2 {print $2}')
+  # If we can't read the disk size, skip size enforcement rather than guess.
+  [[ -z "$total_disk_kb" || "$total_disk_kb" -le 0 ]] && exit 0
+  cap_kb=$(( total_disk_kb / 20 ))                # 5%
+  ceiling_kb=$(( 50 * 1024 * 1024 ))              # 50 GiB in KiB
+  (( cap_kb > ceiling_kb )) && cap_kb=$ceiling_kb
+elif [[ "$MAX_TRASH_SIZE_GB" =~ ^0+$ ]]; then
+  exit 0
+elif [[ "$MAX_TRASH_SIZE_GB" =~ ^[0-9]+$ ]]; then
+  cap_kb=$(( MAX_TRASH_SIZE_GB * 1024 * 1024 ))
+else
+  # Invalid value: silently skip rather than risk wrong behaviour.
+  exit 0
+fi
+
+# Where to scan for ai-trash items.
+if [[ "$PLATFORM" == "Darwin" ]]; then
+  scan_dir="$HOME/.Trash"
+  use_xattr_filter=1
+else
+  scan_dir="$HOME/.local/share/Trash/ai-trash"
+  use_xattr_filter=0
+fi
+[[ -d "$scan_dir" ]] || exit 0
+
+_get_mtime() {
+  if [[ "$PLATFORM" == "Darwin" ]]; then
+    stat -f "%m" "$1" 2>/dev/null
+  else
+    stat -c "%Y" "$1" 2>/dev/null
+  fi
+}
+
+# Build a temp inventory of ai-trash items: <mtime>\t<size_kb>\t<path>
+inventory=$(mktemp -t ai-trash-cleanup.XXXXXX) || exit 0
+trap 'rm -f "$inventory"' EXIT
+
+while IFS= read -r -d '' item; do
+  if (( use_xattr_filter )); then
+    xattr -p com.ai-trash.original-path "$item" >/dev/null 2>&1 || continue
+  fi
+  mtime=$(_get_mtime "$item") || continue
+  [[ -z "$mtime" ]] && continue
+  size_kb=$(du -sk "$item" 2>/dev/null | awk '{print $1}')
+  [[ -z "$size_kb" ]] && continue
+  printf '%s\t%s\t%s\n' "$mtime" "$size_kb" "$item" >> "$inventory"
+done < <(find "$scan_dir" -maxdepth 1 -mindepth 1 -print0 2>/dev/null)
+
+# Total current size of ai-trash items.
+total_kb=$(awk -F'\t' '{s+=$2} END {print s+0}' "$inventory")
+
+(( total_kb <= cap_kb )) && exit 0
+
+# Grace period: items younger than this are exempt from size eviction so that
+# a freshly-trashed huge item can't be evicted before the user has time to
+# notice and restore it. The cap is therefore a soft cap during the grace
+# window; RETENTION_DAYS still bounds long-term trash size.
+grace_threshold=$(( $(date +%s) - SIZE_EVICTION_GRACE_HOURS * 3600 ))
+
+# Sort oldest-first and evict until under cap. Stop at the first item within
+# the grace window: because the inventory is sorted ascending by mtime, every
+# remaining item is also within grace.
+sort -n "$inventory" | while IFS=$'\t' read -r mtime size_kb path; do
+  (( total_kb <= cap_kb )) && break
+  (( mtime > grace_threshold )) && break
+  /bin/rm -rf "$path"
+  total_kb=$(( total_kb - size_kb ))
+done

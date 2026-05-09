@@ -277,6 +277,47 @@ BYPASS_TRASH_PATTERNS=(
 RETENTION_DAYS=30
 
 
+# TRASH SIZE CAP
+# ---------------
+# Hard ceiling on total ai-trash disk usage, in whole gibibytes (GiB). Runs
+# AFTER the age-based purge above, as a secondary safety net for the case
+# where a lot is trashed within the retention window. When the cap is
+# exceeded, the OLDEST items are evicted first until usage drops under it.
+#
+# Values:
+#   (unset / empty)  : auto. 5% of the disk hosting $HOME, capped at 50 GiB.
+#                      Scales sensibly across machines (about 13 GiB on a
+#                      256 GB drive, 50 GiB on anything 1 TB or larger).
+#   0                : disabled. Only RETENTION_DAYS controls trash size.
+#   N (integer GiB)  : fixed cap of N GiB.
+#
+# The cap is enforced once per scheduler run, not on every delete, so a
+# burst can briefly exceed it; the next run will bring it back under.
+#
+# MAX_TRASH_SIZE_GB=
+# MAX_TRASH_SIZE_GB=0
+# MAX_TRASH_SIZE_GB=20
+
+
+# SIZE-EVICTION GRACE PERIOD
+# ---------------------------
+# When the size cap above is exceeded, items are evicted oldest-first.
+# This setting exempts very recent items: anything trashed within the last
+# N hours stays put, even if the cap is over. It exists because a single
+# huge AI-deleted item shouldn't be permanently removed before you've had
+# a chance to notice and restore it.
+#
+# Effect: the cap is a soft cap during the grace window. If your trash is
+# 200 GiB and your cap is 50 GiB but everything was trashed in the last
+# 24 hours, nothing is evicted by the size cap. RETENTION_DAYS still bounds
+# long-term trash size.
+#
+# Set to 0 to disable the grace period (revert to strict oldest-first
+# eviction regardless of recency).
+#
+SIZE_EVICTION_GRACE_HOURS=24
+
+
 # ADDING YOUR OWN TOOLS
 # ----------------------
 # If an AI tool you use isn't listed above, add it to the appropriate section:

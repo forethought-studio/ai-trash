@@ -541,6 +541,158 @@ cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
 # Clear items added by gap-coverage tests
 _ai_trash empty --force >/dev/null 2>&1
 
+# ─── ai-trash-cleanup: size-cap eviction ───────────────────────────────
+# Helper: write a file of approximately N kibibytes of zeros under WORK_DIR
+# and trash it through the rm wrapper. Echoes the resulting trash-dir filename.
+_make_and_trash() {
+  local name=$1 kb=$2 src
+  src="$WORK_DIR/$name"
+  dd if=/dev/zero of="$src" bs=1024 count="$kb" status=none 2>/dev/null
+  _rm "$src"
+  ls "$TEST_TRASH/" 2>/dev/null | grep "^$name" | head -1
+}
+
+_section "ai-trash-cleanup: size cap evicts oldest first"
+# Cap of 150 KiB. Trash three 100-KiB files and age them so order is
+# unambiguous (oldest, middle, newest). Cleanup should evict the two oldest
+# and keep the newest (300 > 150 → evict old, 200 > 150 → evict mid,
+# 100 <= 150 → stop).
+_ai_trash empty --force >/dev/null 2>&1
+old_item=$(_make_and_trash "size-old.txt"    100)
+mid_item=$(_make_and_trash "size-mid.txt"    100)
+new_item=$(_make_and_trash "size-newest.txt" 100)
+if [[ -n "$old_item" && -n "$mid_item" && -n "$new_item" ]]; then
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    touch -t "$(date -v-3d  +%Y%m%d%H%M)" "$TEST_TRASH/$old_item"
+    touch -t "$(date -v-2d  +%Y%m%d%H%M)" "$TEST_TRASH/$mid_item"
+    touch -t "$(date -v-1d  +%Y%m%d%H%M)" "$TEST_TRASH/$new_item"
+  else
+    touch -t "$(date -d '3 days ago' +%Y%m%d%H%M)" "$TEST_TRASH/$old_item"
+    touch -t "$(date -d '2 days ago' +%Y%m%d%H%M)" "$TEST_TRASH/$mid_item"
+    touch -t "$(date -d '1 days ago' +%Y%m%d%H%M)" "$TEST_TRASH/$new_item"
+  fi
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="" \
+    AI_TRASH_CAP_KB_OVERRIDE=150 \
+    bash "$REPO_DIR/ai-trash-cleanup"
+  if [[ ! -e "$TEST_TRASH/$old_item" ]] && \
+     [[ ! -e "$TEST_TRASH/$mid_item" ]] && \
+     [[   -e "$TEST_TRASH/$new_item" ]]; then
+    _pass "size cap: oldest two evicted, newest preserved"
+  else
+    _fail "size cap: unexpected state. old=$([[ -e $TEST_TRASH/$old_item ]] && echo present || echo gone), mid=$([[ -e $TEST_TRASH/$mid_item ]] && echo present || echo gone), new=$([[ -e $TEST_TRASH/$new_item ]] && echo present || echo gone)"
+  fi
+else
+  _fail "size cap: setup failed (one or more test items missing from trash)"
+fi
+
+_section "ai-trash-cleanup: under-cap trash is preserved"
+_ai_trash empty --force >/dev/null 2>&1
+keep_item=$(_make_and_trash "size-keep.txt" 50)
+if [[ -n "$keep_item" ]]; then
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="" \
+    AI_TRASH_CAP_KB_OVERRIDE=10240 \
+    bash "$REPO_DIR/ai-trash-cleanup"
+  if [[ -e "$TEST_TRASH/$keep_item" ]]; then
+    _pass "size cap: items under cap preserved"
+  else
+    _fail "size cap: under-cap item unexpectedly evicted"
+  fi
+else
+  _fail "size cap: setup failed (size-keep.txt not in trash)"
+fi
+
+_section "ai-trash-cleanup: MAX_TRASH_SIZE_GB=0 disables size eviction"
+# When MAX_TRASH_SIZE_GB=0, the script must exit before any size eviction.
+# We set it in config and trash a small file. With no AI_TRASH_CAP_KB_OVERRIDE,
+# the disabled-check fires first and the item is preserved.
+_ai_trash empty --force >/dev/null 2>&1
+cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
+echo "MAX_TRASH_SIZE_GB=0" >> "$TEST_CONF_DIR/config.sh"
+disabled_item=$(_make_and_trash "size-disabled.txt" 100)
+if [[ -n "$disabled_item" ]]; then
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/ai-trash-cleanup"
+  if [[ -e "$TEST_TRASH/$disabled_item" ]]; then
+    _pass "size cap: MAX_TRASH_SIZE_GB=0 disables eviction"
+  else
+    _fail "size cap: item evicted despite MAX_TRASH_SIZE_GB=0"
+  fi
+else
+  _fail "size cap: setup failed (size-disabled.txt not in trash)"
+fi
+
+_section "ai-trash-cleanup: auto cap (unset) doesn't error or evict normal-size trash"
+# With MAX_TRASH_SIZE_GB unset, auto cap is 5% of disk capped at 50 GiB.
+# A 100-KiB file is nowhere near any reasonable disk's 5%, so it must survive.
+_ai_trash empty --force >/dev/null 2>&1
+cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
+auto_item=$(_make_and_trash "size-auto.txt" 100)
+if [[ -n "$auto_item" ]]; then
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/ai-trash-cleanup"
+  if [[ -e "$TEST_TRASH/$auto_item" ]]; then
+    _pass "size cap: auto default preserves normal-size trash"
+  else
+    _fail "size cap: auto default unexpectedly evicted a 100-KiB item"
+  fi
+else
+  _fail "size cap: setup failed (size-auto.txt not in trash)"
+fi
+# Restore default config for subsequent tests
+cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "ai-trash-cleanup: grace period preserves recent items"
+# Cap of 150 KiB. One 100-KiB old file (3d ago) and one 200-KiB file at the
+# current mtime. Total = 300 > 150 cap. With default grace=24h:
+#   - oldest evicted (300 -> 200, still over cap)
+#   - next item is recent (within grace) so loop breaks
+# The recent 200-KiB file MUST survive even though the cap is still exceeded.
+_ai_trash empty --force >/dev/null 2>&1
+grace_old_item=$(_make_and_trash "grace-old.txt" 100)
+grace_new_item=$(_make_and_trash "grace-new.txt" 200)
+if [[ -n "$grace_old_item" && -n "$grace_new_item" ]]; then
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    touch -t "$(date -v-3d +%Y%m%d%H%M)" "$TEST_TRASH/$grace_old_item"
+  else
+    touch -t "$(date -d '3 days ago' +%Y%m%d%H%M)" "$TEST_TRASH/$grace_old_item"
+  fi
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="" \
+    AI_TRASH_CAP_KB_OVERRIDE=150 \
+    bash "$REPO_DIR/ai-trash-cleanup"
+  if [[ ! -e "$TEST_TRASH/$grace_old_item" ]] && [[ -e "$TEST_TRASH/$grace_new_item" ]]; then
+    _pass "size cap: grace period preserves recent item even when cap exceeded"
+  else
+    _fail "size cap grace: old=$([[ -e $TEST_TRASH/$grace_old_item ]] && echo present || echo gone), new=$([[ -e $TEST_TRASH/$grace_new_item ]] && echo present || echo gone)"
+  fi
+else
+  _fail "size cap grace: setup failed"
+fi
+
+_section "ai-trash-cleanup: SIZE_EVICTION_GRACE_HOURS=0 evicts recent items too"
+_ai_trash empty --force >/dev/null 2>&1
+cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
+echo "SIZE_EVICTION_GRACE_HOURS=0" >> "$TEST_CONF_DIR/config.sh"
+nograce_old=$(_make_and_trash "nograce-old.txt" 100)
+nograce_new=$(_make_and_trash "nograce-new.txt" 200)
+if [[ -n "$nograce_old" && -n "$nograce_new" ]]; then
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    touch -t "$(date -v-3d +%Y%m%d%H%M)" "$TEST_TRASH/$nograce_old"
+  else
+    touch -t "$(date -d '3 days ago' +%Y%m%d%H%M)" "$TEST_TRASH/$nograce_old"
+  fi
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="" \
+    AI_TRASH_CAP_KB_OVERRIDE=150 \
+    bash "$REPO_DIR/ai-trash-cleanup"
+  if [[ ! -e "$TEST_TRASH/$nograce_old" ]] && [[ ! -e "$TEST_TRASH/$nograce_new" ]]; then
+    _pass "size cap: grace=0 evicts recent items"
+  else
+    _fail "size cap grace=0: old=$([[ -e $TEST_TRASH/$nograce_old ]] && echo present || echo gone), new=$([[ -e $TEST_TRASH/$nograce_new ]] && echo present || echo gone)"
+  fi
+else
+  _fail "size cap grace=0: setup failed"
+fi
+cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
+_ai_trash empty --force >/dev/null 2>&1
+
 _section "rm_wrapper: --help passes through to /bin/rm"
 out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/rm_wrapper.sh" --help 2>&1 || true)
 if echo "$out" | grep -qiE "usage|illegal option|remove"; then
