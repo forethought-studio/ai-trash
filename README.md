@@ -185,8 +185,8 @@ If ai-trash was installed before the deletion, run `ai-trash list` to see all re
 **Does this slow down `rm`?**
 The overhead is a few milliseconds for the process-tree check. Build tools, CI pipelines, and interactive use are unaffected in practice.
 
-**Does it work with `find -delete` and `git clean`?**
-Yes. ai-trash also ships wrappers for `find` and `git` that intercept `-delete`, `git clean`, `git checkout -- .`, and `git reset --hard` when run by AI tools.
+**Does it work with `find -delete`, `git clean`, and `rsync --delete`?**
+Yes. ai-trash also ships wrappers for `find`, `git`, and `rsync` that intercept `-delete`, `git clean`, `git checkout -- .`, `git reset --hard`, and `rsync --delete` when run by AI tools. Rsync uses backups, so files removed or overwritten in the destination are recoverable from `ai-trash list`.
 
 **Can I use it as a general safe-rm for all deletions, not just AI?**
 Yes — set `MODE=safe` in `~/.config/ai-trash/config.sh` and every `rm` call (yours included) will go to the system Trash instead of being permanent.
