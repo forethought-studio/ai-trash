@@ -54,6 +54,6 @@ class AiTrash < Formula
   end
 
   test do
-    assert_match "ai-trash 1.6.14", shell_output("#{bin}/ai-trash version")
+    assert_match "ai-trash 1.6.15", shell_output("#{bin}/ai-trash version")
   end
 end
