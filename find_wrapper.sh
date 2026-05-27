@@ -5,6 +5,26 @@
 # "-exec rm {} +" which routes through the rm_wrapper for trash protection.
 # All other find invocations pass through unchanged with zero overhead.
 
+# Homebrew bypass: brew shells out to find during formula scripts and audits.
+# We have nothing to trash for brew operations, and the wrapper's $(...)
+# subshells can deadlock when brew's coordination FDs are inherited (see
+# git_wrapper for the original incident). Short-circuit before any subshell,
+# library source, or filesystem walk runs.
+# HOMEBREW_BREW_FILE and HOMEBREW_LIBRARY are set only when brew itself
+# invokes a subprocess. HOMEBREW_PREFIX, HOMEBREW_CELLAR, and
+# HOMEBREW_REPOSITORY are exported by `brew shellenv` in every interactive
+# shell on a brew host, so they are NOT brew-origin signals.
+if [[ -n "${HOMEBREW_BREW_FILE:-}" || -n "${HOMEBREW_LIBRARY:-}" ]]; then
+  for _f in /usr/bin/find /opt/homebrew/bin/find /bin/find; do
+    [[ -x "$_f" && ! -L "$_f" ]] && exec "$_f" "$@"
+  done
+  _wp_self="${BASH_SOURCE[0]}"
+  while [[ -L "$_wp_self" ]]; do _wp_self=$(readlink "$_wp_self"); done
+  _self_dir=$(cd "$(dirname "$_wp_self")" 2>/dev/null && pwd)
+  PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -vxF "$_self_dir" | paste -sd: -)
+  exec find "$@"
+fi
+
 # Source shared library (same directory as this script, resolve symlinks)
 _WRAPPER_PATH="${BASH_SOURCE[0]}"
 while [[ -L "$_WRAPPER_PATH" ]]; do _WRAPPER_PATH=$(readlink "$_WRAPPER_PATH"); done
@@ -34,9 +54,14 @@ _find_real_find() {
     fi
   done
 
-  # Fallback to common locations
+  # Fallback to common locations. Resolve symlinks and skip self so we
+  # never return our own wrapper (which would cause infinite re-entry).
   for f in /usr/bin/find /bin/find; do
-    [[ -x "$f" ]] && { printf '%s' "$f"; return; }
+    [[ -x "$f" ]] || continue
+    local candidate="$f"
+    while [[ -L "$candidate" ]]; do candidate=$(readlink "$candidate"); done
+    [[ "$(basename "$candidate")" == "find_wrapper.sh" ]] && continue
+    printf '%s' "$f"; return
   done
 
   echo "ai-trash find wrapper: cannot find real find binary" >&2

@@ -1833,9 +1833,57 @@ else
 fi
 /bin/rm -rf "$find_dir6"
 
+# Homebrew bypass: find_wrapper must short-circuit when brew env present.
+_section "find_wrapper: HOMEBREW_BREW_FILE bypasses AI detection / -delete rewrite"
+find_brew_dir="$WORK_DIR/find-brew"
+mkdir -p "$find_brew_dir"
+echo "brew bypass" > "$find_brew_dir/victim.txt"
+ln -sf "$REPO_DIR/rm_wrapper.sh" "$WORK_DIR/rm"
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+# TERM_PROGRAM=cursor would normally trigger -delete rewrite to rm wrapper.
+# With HOMEBREW_BREW_FILE set, the bypass must hand directly to real find,
+# which performs a real unlink (no trash).
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor HOMEBREW_BREW_FILE=/usr/local/bin/brew \
+  PATH="$WORK_DIR:$PATH" bash "$FIND_LINK" "$find_brew_dir" -name "*.txt" -delete 2>/dev/null
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$after_count" -eq "$before_count" && ! -f "$find_brew_dir/victim.txt" ]]; then
+  _pass "HOMEBREW_BREW_FILE: bypass fired, real find did the delete"
+else
+  _fail "HOMEBREW_BREW_FILE: bypass did not fire (trash before=$before_count after=$after_count)"
+fi
+/bin/rm -rf "$find_brew_dir"
+
+_section "find_wrapper: HOMEBREW_BREW_FILE bypass completes quickly"
+t_start=$(date +%s)
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" HOMEBREW_BREW_FILE=/usr/local/bin/brew \
+  PATH="$WORK_DIR:$PATH" bash "$FIND_LINK" /tmp -maxdepth 0 >/dev/null 2>&1
+t_end=$(date +%s)
+elapsed=$(( t_end - t_start ))
+if [[ $elapsed -le 2 ]]; then
+  _pass "find HOMEBREW_BREW_FILE: bypass completed in ${elapsed}s"
+else
+  _fail "find HOMEBREW_BREW_FILE: bypass too slow (${elapsed}s)"
+fi
+
+_section "find_wrapper: HOMEBREW_PREFIX alone (shell init) does NOT bypass"
+find_shell_dir="$WORK_DIR/find-shell"
+mkdir -p "$find_shell_dir"
+echo "shell brew" > "$find_shell_dir/victim.txt"
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor HOMEBREW_PREFIX=/opt/homebrew \
+  HOMEBREW_CELLAR=/opt/homebrew/Cellar HOMEBREW_REPOSITORY=/opt/homebrew \
+  PATH="$WORK_DIR:$PATH" bash "$FIND_LINK" "$find_shell_dir" -name "*.txt" -delete 2>/dev/null
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$after_count" -gt "$before_count" ]]; then
+  _pass "find HOMEBREW_PREFIX alone: -delete still routed through wrapper"
+else
+  _fail "find HOMEBREW_PREFIX alone: false bypass, -delete not routed"
+fi
+/bin/rm -rf "$find_shell_dir"
+
 _ai_trash empty --force >/dev/null 2>&1
 
-# ─── rsync wrapper ───────────────────────────────────────────────────────
+# rsync wrapper section
 RSYNC_LINK="$WORK_DIR/rsync_cmd"
 ln -sf "$REPO_DIR/rsync_wrapper.sh" "$RSYNC_LINK"
 
@@ -1956,9 +2004,40 @@ else
   _skip "rsync wrapper tests: rsync not installed"
 fi
 
+# Homebrew bypass: rsync_wrapper must short-circuit on brew env.
+_section "rsync_wrapper: HOMEBREW_BREW_FILE bypass completes quickly"
+t_start=$(date +%s)
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" HOMEBREW_BREW_FILE=/usr/local/bin/brew \
+  PATH="$WORK_DIR:$PATH" bash "$RSYNC_LINK" --version >/dev/null 2>&1
+t_end=$(date +%s)
+elapsed=$(( t_end - t_start ))
+if [[ $elapsed -le 2 ]]; then
+  _pass "rsync HOMEBREW_BREW_FILE: bypass completed in ${elapsed}s"
+else
+  _fail "rsync HOMEBREW_BREW_FILE: bypass too slow (${elapsed}s)"
+fi
+
+# Homebrew bypass: rm_wrapper must short-circuit on brew env. Use a real
+# file deletion under TERM_PROGRAM=cursor (would normally trash) and verify
+# nothing lands in the ai-trash directory.
+_section "rm_wrapper: HOMEBREW_BREW_FILE bypasses AI detection / trash"
+RM_LINK="$WORK_DIR/rm_cmd"
+ln -sf "$REPO_DIR/rm_wrapper.sh" "$RM_LINK"
+rm_brew_file="$WORK_DIR/rm-brew-victim.txt"
+echo "brew rm" > "$rm_brew_file"
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor HOMEBREW_BREW_FILE=/usr/local/bin/brew \
+  bash "$RM_LINK" "$rm_brew_file" 2>/dev/null
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$after_count" -eq "$before_count" && ! -f "$rm_brew_file" ]]; then
+  _pass "rm HOMEBREW_BREW_FILE: bypass fired, file permanently removed"
+else
+  _fail "rm HOMEBREW_BREW_FILE: bypass did not fire (before=$before_count after=$after_count)"
+fi
+
 _ai_trash empty --force >/dev/null 2>&1
 
-# ─── unlink wrapper: additional edge cases ───────────────────────────────
+# unlink wrapper: additional edge cases
 
 _section "unlink_wrapper: zero arguments passes to real unlink"
 unlink_zero_out=$(_unlink 2>&1; echo "EXIT:$?")

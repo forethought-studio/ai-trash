@@ -1,6 +1,22 @@
 #!/bin/bash
 # rm_wrapper.sh – transparent rm/rmdir/unlink replacement that routes files to ai-trash
 
+# Homebrew bypass: brew shells out to rm during cleanup, uninstall, and
+# formula scripts. We have nothing to trash for brew operations, and the
+# wrapper's $(...) subshells can deadlock when brew's coordination FDs are
+# inherited (see git_wrapper for the original incident). Short-circuit
+# before any subshell, library source, or detection logic runs.
+# HOMEBREW_BREW_FILE and HOMEBREW_LIBRARY are set only when brew itself
+# invokes a subprocess. HOMEBREW_PREFIX/CELLAR/REPOSITORY are exported by
+# `brew shellenv` in every interactive shell and are NOT brew-origin signals.
+if [[ -n "${HOMEBREW_BREW_FILE:-}" || -n "${HOMEBREW_LIBRARY:-}" ]]; then
+  case "${0##*/}" in
+    rmdir*) exec /bin/rmdir "$@" ;;
+    unlink) exec /usr/bin/unlink "$@" ;;
+    *)      exec /bin/rm "$@" ;;
+  esac
+fi
+
 # ─── Fast path: skip library sourcing when clearly not AI ──────────────
 # When no AI environment variables are set and mode is selective (default),
 # bypass the entire library + process-tree detection. This cuts per-rm

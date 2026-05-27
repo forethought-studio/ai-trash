@@ -5,6 +5,26 @@
 # rsync's backup mechanism enabled. Backups are imported into ai-trash after
 # rsync exits, so overwritten and deleted destination files can be restored.
 
+# Homebrew bypass: brew shells out to rsync during fetch/extract. We have
+# nothing to trash for brew operations, and the wrapper's $(...) subshells
+# can deadlock when brew's coordination FDs are inherited (see git_wrapper
+# for the original incident). Short-circuit before any subshell, library
+# source, or filesystem walk runs.
+# HOMEBREW_BREW_FILE and HOMEBREW_LIBRARY are set only when brew itself
+# invokes a subprocess. HOMEBREW_PREFIX, HOMEBREW_CELLAR, and
+# HOMEBREW_REPOSITORY are exported by `brew shellenv` in every interactive
+# shell on a brew host, so they are NOT brew-origin signals.
+if [[ -n "${HOMEBREW_BREW_FILE:-}" || -n "${HOMEBREW_LIBRARY:-}" ]]; then
+  for _r in /opt/homebrew/bin/rsync /usr/local/bin/rsync /usr/bin/rsync /bin/rsync; do
+    [[ -x "$_r" && ! -L "$_r" ]] && exec "$_r" "$@"
+  done
+  _wp_self="${BASH_SOURCE[0]}"
+  while [[ -L "$_wp_self" ]]; do _wp_self=$(readlink "$_wp_self"); done
+  _self_dir=$(cd "$(dirname "$_wp_self")" 2>/dev/null && pwd)
+  PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -vxF "$_self_dir" | paste -sd: -)
+  exec rsync "$@"
+fi
+
 # Source shared library (same directory as this script, resolve symlinks)
 _WRAPPER_PATH="${BASH_SOURCE[0]}"
 while [[ -L "$_WRAPPER_PATH" ]]; do _WRAPPER_PATH=$(readlink "$_WRAPPER_PATH"); done
@@ -32,8 +52,14 @@ _find_real_rsync() {
     fi
   done
 
+  # Resolve symlinks and skip self so we never return our own wrapper
+  # (which would cause infinite re-entry).
   for r in /opt/homebrew/bin/rsync /usr/local/bin/rsync /usr/bin/rsync /bin/rsync; do
-    [[ -x "$r" ]] && { printf '%s' "$r"; return; }
+    [[ -x "$r" ]] || continue
+    local candidate="$r"
+    while [[ -L "$candidate" ]]; do candidate=$(readlink "$candidate"); done
+    [[ "$(basename "$candidate")" == "rsync_wrapper.sh" ]] && continue
+    printf '%s' "$r"; return
   done
 
   echo "ai-trash rsync wrapper: cannot find real rsync binary" >&2
