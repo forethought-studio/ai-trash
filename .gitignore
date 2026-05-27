@@ -17,3 +17,4 @@ landing-*.png
 # Queue and backlog runtime state
 .queue/
 .backlog/
+deliverables/
