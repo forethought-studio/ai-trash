@@ -5,6 +5,29 @@
 # copy affected files to ai-trash before letting git run normally.
 # Non-AI callers and non-destructive subcommands pass through instantly.
 
+# Homebrew bypass: brew shells out to git for analytics/config checks many
+# times per invocation. We have nothing to snapshot for brew operations, and
+# the wrapper has historically hung on this path when brew's coordination
+# file descriptors are inherited into the wrapper's $(...) subshells (see
+# memory/git_wrapper_brew_hang.md). Short-circuit before any subshell, ps,
+# or filesystem walk runs.
+# HOMEBREW_PREFIX, HOMEBREW_CELLAR, and HOMEBREW_REPOSITORY are exported by
+# `brew shellenv` for every interactive shell on a brew-installed host, so
+# they are NOT brew-origin signals. HOMEBREW_BREW_FILE and HOMEBREW_LIBRARY
+# are set only when brew itself invokes a subprocess, so they reliably
+# identify a brew-originated call.
+if [[ -n "${HOMEBREW_BREW_FILE:-}" || -n "${HOMEBREW_LIBRARY:-}" ]]; then
+  for _g in /usr/bin/git /opt/homebrew/bin/git /usr/local/Cellar/git/*/bin/git; do
+    [[ -x "$_g" && ! -L "$_g" ]] && exec "$_g" "$@"
+  done
+  # Last resort: strip the wrapper's own dir from PATH and try git.
+  _wp_self="${BASH_SOURCE[0]}"
+  while [[ -L "$_wp_self" ]]; do _wp_self=$(readlink "$_wp_self"); done
+  _self_dir=$(cd "$(dirname "$_wp_self")" 2>/dev/null && pwd)
+  PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -vxF "$_self_dir" | grep -vxF /usr/local/bin | paste -sd: -)
+  exec git "$@"
+fi
+
 # Source shared library (same directory as this script, resolve symlinks)
 _WRAPPER_PATH="${BASH_SOURCE[0]}"
 while [[ -L "$_WRAPPER_PATH" ]]; do _WRAPPER_PATH=$(readlink "$_WRAPPER_PATH"); done
@@ -34,9 +57,14 @@ _find_real_git() {
     fi
   done
 
-  # Fallback to common locations
+  # Fallback to common locations. Resolve symlinks and skip self so we
+  # never return our own wrapper (which would cause infinite re-entry).
   for g in /usr/bin/git /usr/local/bin/git /opt/homebrew/bin/git; do
-    [[ -x "$g" ]] && { printf '%s' "$g"; return; }
+    [[ -x "$g" ]] || continue
+    local candidate="$g"
+    while [[ -L "$candidate" ]]; do candidate=$(readlink "$candidate"); done
+    [[ "$(basename "$candidate")" == "git_wrapper.sh" ]] && continue
+    printf '%s' "$g"; return
   done
 
   echo "ai-trash git wrapper: cannot find real git binary" >&2

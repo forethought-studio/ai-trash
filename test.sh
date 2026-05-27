@@ -1653,7 +1653,68 @@ fi
 
 _ai_trash empty --force >/dev/null 2>&1
 
-# ─── find wrapper ────────────────────────────────────────────────────────
+# Homebrew bypass tests (allow-em-dash: existing section-divider style).
+_section "git_wrapper: HOMEBREW_BREW_FILE bypasses AI detection / snapshot"
+(cd "$GIT_REPO" && echo "brew-bypass" > untrack-brew.txt)
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+# Run with TERM_PROGRAM=cursor (would normally trigger AI snapshot) AND
+# HOMEBREW_BREW_FILE set. The brew bypass must short-circuit before snapshot.
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor HOMEBREW_BREW_FILE=/usr/local/bin/brew \
+  bash "$GIT_LINK" -C "$GIT_REPO" clean -fd 2>/dev/null
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$after_count" -eq "$before_count" ]]; then
+  _pass "HOMEBREW_BREW_FILE: no snapshot (bypass fired)"
+else
+  _fail "HOMEBREW_BREW_FILE: unexpected snapshot, bypass did not fire (before=$before_count after=$after_count)"
+fi
+if [[ ! -f "$GIT_REPO/untrack-brew.txt" ]]; then
+  _pass "HOMEBREW_BREW_FILE: real git still executed"
+else
+  _fail "HOMEBREW_BREW_FILE: real git did not run (file still present)"
+fi
+
+_section "git_wrapper: HOMEBREW_PREFIX alone (shell init) does NOT bypass"
+# HOMEBREW_PREFIX is set in every interactive shell on a brew host by
+# `brew shellenv`. Its presence must not disable AI-snapshot behavior.
+(cd "$GIT_REPO" && echo "shell-brew" > untrack-shell.txt)
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor HOMEBREW_PREFIX=/opt/homebrew \
+  HOMEBREW_CELLAR=/opt/homebrew/Cellar HOMEBREW_REPOSITORY=/opt/homebrew \
+  bash "$GIT_LINK" -C "$GIT_REPO" clean -fd 2>/dev/null
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$after_count" -gt "$before_count" ]]; then
+  _pass "HOMEBREW_PREFIX alone: snapshot still happens (no false bypass)"
+else
+  _fail "HOMEBREW_PREFIX alone: false bypass, AI snapshot suppressed"
+fi
+
+_section "git_wrapper: HOMEBREW_BREW_FILE bypass completes quickly"
+t_start=$(date +%s)
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" HOMEBREW_BREW_FILE=/usr/local/bin/brew \
+  bash "$GIT_LINK" --version >/dev/null 2>&1
+t_end=$(date +%s)
+elapsed=$(( t_end - t_start ))
+if [[ $elapsed -le 2 ]]; then
+  _pass "HOMEBREW_BREW_FILE: bypass completed in ${elapsed}s"
+else
+  _fail "HOMEBREW_BREW_FILE: bypass too slow (${elapsed}s, expected <=2)"
+fi
+
+_section "git_wrapper: no brew env vars: AI detection still runs (snapshot)"
+(cd "$GIT_REPO" && echo "no-brew" > untrack-nobrew.txt)
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
+  bash "$GIT_LINK" -C "$GIT_REPO" clean -fd 2>/dev/null
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$after_count" -gt "$before_count" ]]; then
+  _pass "no brew env: snapshot still happens for AI caller"
+else
+  _fail "no brew env: snapshot regression (before=$before_count after=$after_count)"
+fi
+
+_ai_trash empty --force >/dev/null 2>&1
+
+# find wrapper section
 FIND_LINK="$WORK_DIR/find_cmd"
 ln -sf "$REPO_DIR/find_wrapper.sh" "$FIND_LINK"
 
