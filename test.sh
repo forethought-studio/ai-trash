@@ -1311,6 +1311,30 @@ else
   _fail "git_wrapper: unexpected rev-parse output '$_chain_out'"
 fi
 
+_section "git_wrapper: resolves real git via a relative symlink without stderr noise"
+# Homebrew installs git as a RELATIVE symlink (git -> ../Cellar/.../bin/git).
+# _find_real_git must read the candidate's magic bytes via the absolute PATH
+# entry, not the relative readlink target, or it leaks 'No such file or
+# directory' to stderr on every single git call.
+_rel_bin="$WORK_DIR/relsym/bin"
+_rel_cellar="$WORK_DIR/relsym/Cellar"
+mkdir -p "$_rel_bin" "$_rel_cellar"
+cp /bin/echo "$_rel_cellar/git"        # a Mach-O binary stand-in (not a #! script)
+chmod +x "$_rel_cellar/git"
+( cd "$_rel_bin" && ln -sf "../Cellar/git" git )   # relative symlink, Homebrew-style
+# Capture stderr to a file (no command substitution, '|| true' so a non-zero or
+# signalled wrapper exit can never abort the suite under set -e). We assert only
+# on whether the wrapper leaked the relative-path error to stderr.
+timeout 12 env HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
+  PATH="$_rel_bin:/usr/bin:/bin" \
+  bash "$GIT_LINK" -C "$GIT_REPO" rev-parse --is-inside-work-tree \
+  </dev/null >/dev/null 2>"$WORK_DIR/relsym.err" || true
+if [[ -s "$WORK_DIR/relsym.err" ]]; then
+  _fail "relative-symlink real git: leaked stderr -> $(cat "$WORK_DIR/relsym.err")"
+else
+  _pass "relative-symlink real git: clean stderr (no readlink-relative leak)"
+fi
+
 _section "git_wrapper: git clean -fd snapshots untracked files"
 (cd "$GIT_REPO" && echo "untracked content" > untracked-file.txt)
 before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')

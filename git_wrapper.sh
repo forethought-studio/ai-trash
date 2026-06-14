@@ -76,7 +76,10 @@ _find_real_git() {
       # Skip any git that is itself a shell-script wrapper (e.g. another agent's
       # git shim); only a compiled binary is real git. Two PATH-walking wrappers
       # that each skip only themselves would otherwise exec each other (hang).
-      local _magic=""; read -rn2 _magic < "$candidate" 2>/dev/null
+      # Read the magic from the absolute PATH entry, NOT the (possibly relative)
+      # readlink target: Homebrew's git is a relative symlink (../Cellar/...),
+      # which would not resolve from our CWD. The OS follows the link for us.
+      local _magic=""; read -rn2 _magic 2>/dev/null < "$dir/git" || true
       [[ "$_magic" == '#!' ]] && continue
       printf '%s' "$dir/git"
       return
@@ -90,7 +93,7 @@ _find_real_git() {
     local candidate="$g"
     while [[ -L "$candidate" ]]; do candidate=$(readlink "$candidate"); done
     [[ "$(basename "$candidate")" == "git_wrapper.sh" ]] && continue
-    local _magic=""; read -rn2 _magic < "$candidate" 2>/dev/null
+    local _magic=""; read -rn2 _magic 2>/dev/null < "$g" || true
     [[ "$_magic" == '#!' ]] && continue
     printf '%s' "$g"; return
   done
