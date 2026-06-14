@@ -2023,6 +2023,22 @@ if [[ "$_sc_rc3" == 0 && ! -e "$_scT/state2/path-shadow-warning" ]]; then
 else
   _fail "scanner self-clear: rc=$_sc_rc3 banner=$([[ -e "$_scT/state2/path-shadow-warning" ]] && echo still-set || echo cleared)"
 fi
+# (4) runs under launchd's stripped environment, where HOME is NOT exported.
+# Regression for the 2026-06-14 load failure: `set -u` + the $HOME-derived
+# STATE_DIR/QUARANTINE_DIR defaults aborted the scan before it did anything
+# (launchctl reported exit 78). The scanner must self-heal an unset HOME from
+# the password database instead of crashing. Isolate STATE_DIR so the self-
+# healed real HOME is never written to.
+if env -u HOME AI_TRASH_INSTALL_DIR="$_scT/install" AI_TRASH_STATE_DIR="$_scT/state3" \
+     AI_TRASH_SHADOW_CMDS="zt" PATH="$_scT/install:/usr/bin:/bin" \
+     /bin/bash "$_sc" >/dev/null 2>"$_scT/nohome.err"
+then _sc_rc4=0; else _sc_rc4=$?; fi
+_sc_nohome_err=$(cat "$_scT/nohome.err" 2>/dev/null || true)
+if [[ "$_sc_rc4" == 0 && "$_sc_nohome_err" != *"unbound variable"* ]]; then
+  _pass "scanner runs under launchd's stripped env (HOME unset) without crashing"
+else
+  _fail "scanner HOME-unset: rc=$_sc_rc4 err=$_sc_nohome_err"
+fi
 
 _section "find_wrapper: -delete routes through rm wrapper"
 find_dir="$WORK_DIR/find-test"

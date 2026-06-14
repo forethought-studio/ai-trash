@@ -38,6 +38,14 @@
 
 set -uo pipefail
 
+# launchd LaunchAgents (and stripped cron environments) do not export HOME, so
+# the $HOME-derived STATE_DIR/QUARANTINE_DIR defaults below would abort under
+# `set -u` before the scan runs (observed 2026-06-14: launchctl exit 78). Derive
+# it from the password database via tilde expansion, which bash falls back to
+# when HOME is unset. Tilde expansion is not parameter expansion, so it is itself
+# safe under `set -u`.
+if [[ -z "${HOME:-}" ]]; then HOME=$(echo ~); export HOME; fi
+
 DRY_RUN=false
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
 
