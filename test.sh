@@ -1797,6 +1797,45 @@ _find() {
     PATH="$WORK_DIR:$PATH" bash "$FIND_LINK" "$@"
 }
 
+_section "wrappers: exhaustive fd-close removes a leaked pipe on a HIGH fd (beyond old 200 cap)"
+# The hang class is caused by an inherited PIPE write-end leaking into the
+# wrapper's forked children (e.g. git's fsmonitor daemon or a $(...) subshell),
+# which keeps a reader from ever seeing EOF. The fd-close must catch pipes at
+# ANY fd number, not just below the old hardcoded 200 ceiling -- a leak at fd 250
+# slipped straight through before. We leak a pipe write-end on fd 250, run a
+# wrapper, and have its resolved "real" binary report whether fd 250 survived.
+# Exercised through find_wrapper because its fd-close block is byte-identical to
+# the git/rm/rsync copies, and _find_real_find accepts a script stand-in.
+_fdreport="$WORK_DIR/fd250-report"
+_fake_find_dir="$WORK_DIR/fake-find-bin"
+_fd_fifo="$WORK_DIR/fd250.fifo"
+mkdir -p "$_fake_find_dir"
+# Fake "real find": records whether the leaked high fd is still open, then no-ops.
+printf '#!/bin/bash\nif [[ -e /dev/fd/250 ]]; then echo OPEN > "%s"; else echo CLOSED > "%s"; fi\n' \
+  "$_fdreport" "$_fdreport" > "$_fake_find_dir/find"
+chmod +x "$_fake_find_dir/find"
+/bin/rm -f "$_fdreport" "$_fd_fifo"
+mkfifo "$_fd_fifo" 2>/dev/null || true
+# Hold the FIFO read end open so opening the write end below does not block.
+cat "$_fd_fifo" >/dev/null &
+_fd_rpid=$!
+sleep 0.2
+# Leak a PIPE write-end on fd 250 (above the old 200 ceiling) into this shell,
+# then run the wrapper, which inherits it. A non-delete find arg passes straight
+# through to the resolved real binary, which reports whether fd 250 survived.
+exec 250>"$_fd_fifo"
+timeout 12 env HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
+  PATH="$_fake_find_dir:/usr/bin:/bin" \
+  bash "$FIND_LINK" /tmp -name nonexistent-xyz </dev/null >/dev/null 2>&1 || true
+exec 250>&-
+kill "$_fd_rpid" 2>/dev/null || true
+_fdstate="$(cat "$_fdreport" 2>/dev/null)"
+if [[ "$_fdstate" == "CLOSED" ]]; then
+  _pass "leaked pipe on fd 250 closed before exec (exhaustive, no 200 ceiling)"
+else
+  _fail "leaked pipe on fd 250 survived into the real binary (report='$_fdstate'): fd-close not exhaustive"
+fi
+
 _section "find_wrapper: -delete routes through rm wrapper"
 find_dir="$WORK_DIR/find-test"
 mkdir -p "$find_dir"

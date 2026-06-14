@@ -5,26 +5,68 @@
 # copy affected files to ai-trash before letting git run normally.
 # Non-AI callers and non-destructive subcommands pass through instantly.
 
-# ── Close inherited file descriptors >= 3 (hang-prevention, must run first) ──
+# ── Close inherited pipe/socket fds >= 3 (hang-prevention, must run first) ──
 # When this wrapper is invoked with extra fds open (brew's coordination fd, or
-# an AI agent's stdout/stderr capture pipes), those fds leak into our $(...)
-# command substitutions, which then block forever waiting for an EOF that never
-# arrives because a forked child still holds the pipe's write end. That was the
-# historical "git hangs" failure. Closing every inherited fd in [3,199] up front
-# makes that hang class impossible by construction. Real git uses only stdin/
-# stdout/stderr, so this never changes git behaviour.
-if [[ -e /dev/fd ]]; then
+# an AI agent's stdout/stderr capture pipes), those fds leak into our $(...) and
+# <(...) subshells. A forked child keeps the pipe's write end open, so the reader
+# never sees EOF and command substitution blocks forever -- the historical "git
+# hangs" failure. We close every inherited PIPE or SOCKET fd >= 3 up front, which
+# makes that hang class impossible by construction with no fixed ceiling.
+# We deliberately test the fd type instead of capping at a fixed number: only
+# pipes and sockets can deadlock a reader. Regular files and devices are left
+# open because (a) bash's own script descriptor (typically fd 255) is a regular
+# file and MUST stay open for the wrapper to keep running, and (b) a regular file
+# always reports EOF, so it can never cause this hang. Real git uses only stdio.
+if [[ -d /dev/fd ]]; then
   for _aitfd in /dev/fd/*; do
     _aitfd=${_aitfd##*/}
     case "$_aitfd" in ''|*[!0-9]*) continue ;; esac
-    # Skip 0/1/2 (stdio) and >= 200 (bash's own internal/script descriptors,
-    # e.g. 255). The leaked pipes that cause the hang are always low-numbered.
-    if (( _aitfd >= 3 && _aitfd < 200 )); then
+    (( _aitfd >= 3 )) || continue
+    if [[ -p "/dev/fd/$_aitfd" || -S "/dev/fd/$_aitfd" ]]; then
       eval "exec ${_aitfd}>&-" 2>/dev/null || true
     fi
   done
   unset _aitfd
+else
+  # No /dev/fd (rare on macOS/Linux): bounded numeric close that stops below
+  # bash's script descriptor (255) so we never clobber it.
+  for (( _aitfd = 3; _aitfd < 250; _aitfd++ )); do
+    eval "exec ${_aitfd}>&-" 2>/dev/null || true
+  done
+  unset _aitfd
 fi
+
+# ── Recursion guard: belt + suspenders (mirrored in ~/.claude/bin/git shim) ──
+# Two script-based git wrappers live on PATH: this snapshot wrapper and the
+# cross-agent shim (~/.claude/bin/git). Each resolves "the real git" by PATH
+# order, so if they ever resolve INTO EACH OTHER the result is unbounded mutual
+# re-exec that pins a CPU core (observed 2026-06-14: a single `rev-parse`
+# spinning at 100% CPU for minutes). Two independent defenses:
+#   Belt (prevent):   tag the wrapper chain in AI_GIT_WRAPPER_CHAIN. If THIS
+#                     wrapper's tag is already present we are being recursed
+#                     into, so break straight out to a real git BINARY.
+#   Suspenders (bail): count wrapper depth in AI_GIT_WRAPPER_DEPTH. If recursion
+#                     ever slips past the belt, bail to a real BINARY at depth 8
+#                     instead of spinning forever.
+# Nested git calls (hooks, scripts) also short-circuit here, which avoids
+# re-running the snapshot machinery for every internal git invocation.
+_ait_break_to_real_git() {
+  local _b _m
+  for _b in /opt/homebrew/bin/git /usr/local/Cellar/git/*/bin/git /usr/bin/git /bin/git; do
+    [[ -x "$_b" ]] || continue
+    _m=""; read -rn2 _m <"$_b" 2>/dev/null || true
+    [[ "$_m" == '#!' ]] && continue        # never another script wrapper
+    exec "$_b" "$@"
+  done
+  exec /usr/bin/git "$@"                    # last resort
+}
+AI_GIT_WRAPPER_DEPTH=$(( ${AI_GIT_WRAPPER_DEPTH:-0} + 1 ))
+export AI_GIT_WRAPPER_DEPTH
+case ":${AI_GIT_WRAPPER_CHAIN:-}:" in
+  *":aitrash:"*) _ait_break_to_real_git "$@" ;;
+esac
+(( AI_GIT_WRAPPER_DEPTH > 8 )) && _ait_break_to_real_git "$@"
+export AI_GIT_WRAPPER_CHAIN="${AI_GIT_WRAPPER_CHAIN:+$AI_GIT_WRAPPER_CHAIN:}aitrash"
 
 # Homebrew bypass: brew shells out to git for analytics/config checks many
 # times per invocation. We have nothing to snapshot for brew operations, and

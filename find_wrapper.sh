@@ -5,18 +5,26 @@
 # "-exec rm {} +" which routes through the rm_wrapper for trash protection.
 # All other find invocations pass through unchanged with zero overhead.
 
-# ── Close inherited fds [3,199] before any subshell (hang-prevention) ──
+# ── Close inherited pipe/socket fds >= 3 before any subshell (hang-prevention) ──
 # See git_wrapper.sh for the full rationale: leaked caller fds (brew or AI-agent
-# pipes) inherited into our $(...) subshells make command substitution block
-# forever on an EOF that never arrives. Closing them up front makes that hang
-# class impossible by construction; real find uses only stdio.
-if [[ -e /dev/fd ]]; then
+# pipes) inherited into our $(...)/<(...) subshells make command substitution
+# block forever on an EOF that never arrives. We close every inherited PIPE or
+# SOCKET fd >= 3 (no fixed ceiling); regular files and devices -- including bash's
+# own script descriptor, fd 255 -- are left open, since only pipes/sockets can
+# deadlock a reader. Real find uses only stdio.
+if [[ -d /dev/fd ]]; then
   for _aitfd in /dev/fd/*; do
     _aitfd=${_aitfd##*/}
     case "$_aitfd" in ''|*[!0-9]*) continue ;; esac
-    if (( _aitfd >= 3 && _aitfd < 200 )); then
+    (( _aitfd >= 3 )) || continue
+    if [[ -p "/dev/fd/$_aitfd" || -S "/dev/fd/$_aitfd" ]]; then
       eval "exec ${_aitfd}>&-" 2>/dev/null || true
     fi
+  done
+  unset _aitfd
+else
+  for (( _aitfd = 3; _aitfd < 250; _aitfd++ )); do
+    eval "exec ${_aitfd}>&-" 2>/dev/null || true
   done
   unset _aitfd
 fi
