@@ -17,6 +17,12 @@ class AiTrash < Formula
     bin.install "ai-trash-cleanup"
     bin.install "ai-trash"
 
+    # Duplicate-wrapper safety: the scanner detects another command wrapper
+    # shadowing ours on PATH (which can re-introduce the wrapper-recursion
+    # spin), and the banner is the shell-rc hook that surfaces its warnings.
+    bin.install "scripts/check-path-shadows.sh"
+    bin.install "scripts/ai-trash-banner.sh"
+
     # Intercept commands by symlinking into Homebrew's bin, which should
     # appear before /bin in PATH after `brew shellenv` is sourced.
     bin.install_symlink "rm_wrapper.sh" => "rm"
@@ -30,7 +36,7 @@ class AiTrash < Formula
   service do
     run [opt_bin/"ai-trash-cleanup"]
     run_type :interval
-    interval 21600  # every 6 hours
+    interval 21600 # every 6 hours
     log_path var/"log/ai-trash-cleanup.log"
     error_log_path var/"log/ai-trash-cleanup.log"
   end
@@ -50,10 +56,19 @@ class AiTrash < Formula
 
         which rm   # should show #{opt_bin}/rm
         which rsync # should show #{opt_bin}/rsync
+
+      A duplicate-wrapper scanner is installed but not auto-scheduled (brew
+      formulae allow only one service, used here by the cleanup job). Run it
+      on demand, and source the banner from your shell rc for sticky warnings:
+
+        #{opt_bin}/check-path-shadows.sh
+        echo 'source #{opt_bin}/ai-trash-banner.sh' >> ~/.zshrc
+
+      For the daily auto-scan LaunchAgent, use the repo's install.sh instead.
     EOS
   end
 
   test do
-    assert_match "ai-trash 1.6.16", shell_output("#{bin}/ai-trash version")
+    assert_match(/^ai-trash \d+\.\d+\.\d+$/, shell_output("#{bin}/ai-trash version"))
   end
 end
