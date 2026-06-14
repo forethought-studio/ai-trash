@@ -36,37 +36,11 @@ else
   unset _aitfd
 fi
 
-# ── Recursion guard: belt + suspenders (mirrored in ~/.claude/bin/git shim) ──
-# Two script-based git wrappers live on PATH: this snapshot wrapper and the
-# cross-agent shim (~/.claude/bin/git). Each resolves "the real git" by PATH
-# order, so if they ever resolve INTO EACH OTHER the result is unbounded mutual
-# re-exec that pins a CPU core (observed 2026-06-14: a single `rev-parse`
-# spinning at 100% CPU for minutes). Two independent defenses:
-#   Belt (prevent):   tag the wrapper chain in AI_GIT_WRAPPER_CHAIN. If THIS
-#                     wrapper's tag is already present we are being recursed
-#                     into, so break straight out to a real git BINARY.
-#   Suspenders (bail): count wrapper depth in AI_GIT_WRAPPER_DEPTH. If recursion
-#                     ever slips past the belt, bail to a real BINARY at depth 8
-#                     instead of spinning forever.
-# Nested git calls (hooks, scripts) also short-circuit here, which avoids
-# re-running the snapshot machinery for every internal git invocation.
-_ait_break_to_real_git() {
-  local _b _m
-  for _b in /opt/homebrew/bin/git /usr/local/Cellar/git/*/bin/git /usr/bin/git /bin/git; do
-    [[ -x "$_b" ]] || continue
-    _m=""; read -rn2 _m <"$_b" 2>/dev/null || true
-    [[ "$_m" == '#!' ]] && continue        # never another script wrapper
-    exec "$_b" "$@"
-  done
-  exec /usr/bin/git "$@"                    # last resort
-}
-AI_GIT_WRAPPER_DEPTH=$(( ${AI_GIT_WRAPPER_DEPTH:-0} + 1 ))
-export AI_GIT_WRAPPER_DEPTH
-case ":${AI_GIT_WRAPPER_CHAIN:-}:" in
-  *":aitrash:"*) _ait_break_to_real_git "$@" ;;
-esac
-(( AI_GIT_WRAPPER_DEPTH > 8 )) && _ait_break_to_real_git "$@"
-export AI_GIT_WRAPPER_CHAIN="${AI_GIT_WRAPPER_CHAIN:+$AI_GIT_WRAPPER_CHAIN:}aitrash"
+# Recursion guard runs just after the shared library is sourced, below — it
+# needs _ait_recursion_guard from ai-trash-lib.sh. The guard is safe there
+# because nothing between the fd-close above and that point invokes git: the
+# Homebrew bypass execs a real binary, and sourcing the library only runs
+# non-git subprocesses. See _ait_recursion_guard for the belt+suspenders design.
 
 # Homebrew bypass: brew shells out to git for analytics/config checks many
 # times per invocation. We have nothing to snapshot for brew operations, and
@@ -97,54 +71,15 @@ while [[ -L "$_WRAPPER_PATH" ]]; do _WRAPPER_PATH=$(readlink "$_WRAPPER_PATH"); 
 # shellcheck source=ai-trash-lib.sh
 source "$(cd "$(dirname "$_WRAPPER_PATH")" && pwd)/ai-trash-lib.sh"
 
+# Recursion guard (belt + suspenders) — see _ait_recursion_guard in the library.
+# Tag "aitrash" pairs with the shim's "shim" tag so the two break each other's
+# loops. This is the first point that could exec git, so the guard belongs here.
+_ait_recursion_guard aitrash git "$@"
+
 REAL_CMD="git"
 
-# ─── Find the real git binary (skip ourselves in PATH) ─────────────────
-_find_real_git() {
-  local wrapper_dir _wp="${BASH_SOURCE[0]}"
-  while [[ -L "$_wp" ]]; do _wp=$(readlink "$_wp"); done
-  wrapper_dir=$(cd "$(dirname "$_wp")" && pwd)
-
-  local IFS=:
-  for dir in $PATH; do
-    local resolved
-    resolved=$(cd "$dir" 2>/dev/null && pwd) || continue
-    [[ "$resolved" == "$wrapper_dir" ]] && continue
-    if [[ -x "$dir/git" ]]; then
-      # Skip if this is a symlink that resolves to our wrapper
-      local candidate="$dir/git"
-      while [[ -L "$candidate" ]]; do candidate=$(readlink "$candidate"); done
-      [[ "$(basename "$candidate")" == "git_wrapper.sh" ]] && continue
-      # Skip any git that is itself a shell-script wrapper (e.g. another agent's
-      # git shim); only a compiled binary is real git. Two PATH-walking wrappers
-      # that each skip only themselves would otherwise exec each other (hang).
-      # Read the magic from the absolute PATH entry, NOT the (possibly relative)
-      # readlink target: Homebrew's git is a relative symlink (../Cellar/...),
-      # which would not resolve from our CWD. The OS follows the link for us.
-      local _magic=""; read -rn2 _magic 2>/dev/null < "$dir/git" || true
-      [[ "$_magic" == '#!' ]] && continue
-      printf '%s' "$dir/git"
-      return
-    fi
-  done
-
-  # Fallback to common locations. Resolve symlinks and skip self so we
-  # never return our own wrapper (which would cause infinite re-entry).
-  for g in /usr/bin/git /usr/local/bin/git /opt/homebrew/bin/git; do
-    [[ -x "$g" ]] || continue
-    local candidate="$g"
-    while [[ -L "$candidate" ]]; do candidate=$(readlink "$candidate"); done
-    [[ "$(basename "$candidate")" == "git_wrapper.sh" ]] && continue
-    local _magic=""; read -rn2 _magic 2>/dev/null < "$g" || true
-    [[ "$_magic" == '#!' ]] && continue
-    printf '%s' "$g"; return
-  done
-
-  echo "ai-trash git wrapper: cannot find real git binary" >&2
-  exit 127
-}
-
-REAL_GIT=$(_find_real_git)
+# Resolve the real git binary via the shared, magic-byte-filtered resolver.
+REAL_GIT=$(_ait_resolve_real git) || exit 127
 
 # ─── Guards ────────────────────────────────────────────────────────────
 # Non-user contexts: instant passthrough

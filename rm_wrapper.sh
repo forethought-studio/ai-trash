@@ -19,6 +19,8 @@ if [[ -d /dev/fd ]]; then
   done
   unset _aitfd
 else
+  # No /dev/fd (rare on macOS/Linux): bounded numeric close that stops below
+  # bash's script descriptor (255) so we never clobber it.
   for (( _aitfd = 3; _aitfd < 250; _aitfd++ )); do
     eval "exec ${_aitfd}>&-" 2>/dev/null || true
   done
@@ -78,6 +80,18 @@ while [[ -L "$_WRAPPER_PATH" ]]; do _WRAPPER_PATH=$(readlink "$_WRAPPER_PATH"); 
 source "$(cd "$(dirname "$_WRAPPER_PATH")" && pwd)/ai-trash-lib.sh"
 
 SCRIPT_NAME="${0##*/}"
+
+# Recursion guard (belt + suspenders) — see _ait_recursion_guard in the library.
+# rm/rmdir/unlink already exec hardcoded real binaries (/bin/rm, /bin/rmdir,
+# /usr/bin/unlink) and so cannot recurse into a wrapper by construction; the
+# guard is kept for uniformity and as defense in depth (it bails to a real
+# binary if depth ever runs away across a mixed wrapper chain). Derive the real
+# command name so a break (rare) targets the right binary.
+case "$SCRIPT_NAME" in
+  rmdir*) _ait_recursion_guard aitrash-rm rmdir "$@" ;;
+  unlink) _ait_recursion_guard aitrash-rm unlink "$@" ;;
+  *)      _ait_recursion_guard aitrash-rm rm "$@" ;;
+esac
 
 # Determine the real command based on how we were called
 case "$SCRIPT_NAME" in

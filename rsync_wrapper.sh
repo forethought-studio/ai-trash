@@ -23,6 +23,8 @@ if [[ -d /dev/fd ]]; then
   done
   unset _aitfd
 else
+  # No /dev/fd (rare on macOS/Linux): bounded numeric close that stops below
+  # bash's script descriptor (255) so we never clobber it.
   for (( _aitfd = 3; _aitfd < 250; _aitfd++ )); do
     eval "exec ${_aitfd}>&-" 2>/dev/null || true
   done
@@ -55,40 +57,13 @@ while [[ -L "$_WRAPPER_PATH" ]]; do _WRAPPER_PATH=$(readlink "$_WRAPPER_PATH"); 
 # shellcheck source=ai-trash-lib.sh
 source "$(cd "$(dirname "$_WRAPPER_PATH")" && pwd)/ai-trash-lib.sh"
 
+# Recursion guard (belt + suspenders) — see _ait_recursion_guard in the library.
+# Previously rsync resolved the real binary with only a basename skip and NO
+# magic-byte check; the shared resolver below closes that gap. (The 2026-06-14
+# stale ~/bin/rsync incident was a PATH-ordering problem, separate from this.)
+_ait_recursion_guard aitrash-rsync rsync "$@"
+
 REAL_CMD="rsync"
-
-_find_real_rsync() {
-  local wrapper_dir _wp="${BASH_SOURCE[0]}"
-  while [[ -L "$_wp" ]]; do _wp=$(readlink "$_wp"); done
-  wrapper_dir=$(cd "$(dirname "$_wp")" && pwd)
-
-  local IFS=:
-  for dir in $PATH; do
-    local resolved
-    resolved=$(cd "$dir" 2>/dev/null && pwd) || continue
-    [[ "$resolved" == "$wrapper_dir" ]] && continue
-    if [[ -x "$dir/rsync" ]]; then
-      local candidate="$dir/rsync"
-      while [[ -L "$candidate" ]]; do candidate=$(readlink "$candidate"); done
-      [[ "$(basename "$candidate")" == "rsync_wrapper.sh" ]] && continue
-      printf '%s' "$dir/rsync"
-      return
-    fi
-  done
-
-  # Resolve symlinks and skip self so we never return our own wrapper
-  # (which would cause infinite re-entry).
-  for r in /opt/homebrew/bin/rsync /usr/local/bin/rsync /usr/bin/rsync /bin/rsync; do
-    [[ -x "$r" ]] || continue
-    local candidate="$r"
-    while [[ -L "$candidate" ]]; do candidate=$(readlink "$candidate"); done
-    [[ "$(basename "$candidate")" == "rsync_wrapper.sh" ]] && continue
-    printf '%s' "$r"; return
-  done
-
-  echo "ai-trash rsync wrapper: cannot find real rsync binary" >&2
-  exit 127
-}
 
 _rsync_option_takes_value() {
   case "$1" in
@@ -177,7 +152,8 @@ _rsync_abs_path() {
   printf '%s/%s\n' "$abs_dir" "$base"
 }
 
-REAL_RSYNC=$(_find_real_rsync)
+# Resolve the real rsync binary via the shared, magic-byte-filtered resolver.
+REAL_RSYNC=$(_ait_resolve_real rsync) || exit 127
 
 # openrsync (Apple's BSD clone, default on macOS 15+) is stricter than GNU
 # rsync and fails with "fchownat: Operation not permitted" when --backup-dir

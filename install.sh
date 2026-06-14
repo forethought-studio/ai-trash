@@ -76,9 +76,11 @@ sudo cp "$SCRIPT_DIR/find_wrapper.sh"  "$BIN/find_wrapper.sh"
 sudo cp "$SCRIPT_DIR/rsync_wrapper.sh" "$BIN/rsync_wrapper.sh"
 sudo cp "$SCRIPT_DIR/ai-trash-cleanup" "$BIN/ai-trash-cleanup"
 sudo cp "$SCRIPT_DIR/ai-trash"         "$BIN/ai-trash"
+sudo cp "$SCRIPT_DIR/scripts/check-path-shadows.sh" "$BIN/check-path-shadows.sh"
 
 sudo chmod 755 "$BIN/ai-trash-lib.sh" "$BIN/rm_wrapper.sh" "$BIN/git_wrapper.sh" \
-  "$BIN/find_wrapper.sh" "$BIN/rsync_wrapper.sh" "$BIN/ai-trash-cleanup" "$BIN/ai-trash"
+  "$BIN/find_wrapper.sh" "$BIN/rsync_wrapper.sh" "$BIN/ai-trash-cleanup" "$BIN/ai-trash" \
+  "$BIN/check-path-shadows.sh"
 
 # Create rm, rmdir, and unlink symlinks
 sudo ln -sf "$BIN/rm_wrapper.sh" "$BIN/rm"
@@ -103,6 +105,7 @@ echo "  rsync_wrapper.sh installed"
 echo "  $BIN/rsync  → rsync_wrapper.sh"
 echo "  ai-trash-cleanup installed"
 echo "  ai-trash installed"
+echo "  check-path-shadows.sh installed (duplicate-wrapper scanner)"
 
 # ─── Config ────────────────────────────────────────────────────────────
 
@@ -153,6 +156,55 @@ else
   fi
 fi
 
+# ─── PATH-shadow scanner (daily) + sticky banner ───────────────────────
+# Detects duplicate command wrappers on PATH that could re-introduce the
+# wrapper-recursion spin. Auto-quarantines stale ai-trash copies; surfaces
+# anything it can't safely fix via a banner printed by every new shell.
+sudo cp "$SCRIPT_DIR/scripts/ai-trash-banner.sh" "$BIN/ai-trash-banner.sh"
+sudo chmod 644 "$BIN/ai-trash-banner.sh"
+
+if [[ "$PLATFORM" == "Darwin" ]]; then
+  SCAN_LABEL="com.ai-trash.path-shadow-scan"
+  SCAN_PLIST="$HOME/Library/LaunchAgents/${SCAN_LABEL}.plist"
+  mkdir -p "$HOME/Library/LaunchAgents"
+  # Point the plist at the actual install dir (the template assumes /usr/local/bin).
+  sed "s#/usr/local/bin/check-path-shadows.sh#$BIN/check-path-shadows.sh#" \
+    "$SCRIPT_DIR/com.ai-trash.path-shadow-scan.plist" > "$SCAN_PLIST"
+  launchctl unload "$SCAN_PLIST" 2>/dev/null || true
+  launchctl bootout "gui/$(id -u)/$SCAN_LABEL" 2>/dev/null || true
+  if launchctl bootstrap "gui/$(id -u)" "$SCAN_PLIST" 2>/dev/null ||
+     launchctl load "$SCAN_PLIST" 2>/dev/null; then
+    echo "  PATH-shadow scan LaunchAgent loaded (runs daily)"
+  else
+    echo "  PATH-shadow scan LaunchAgent installed but not loaded (activates on next login)"
+  fi
+else
+  SCAN_CRON_MARKER="# ai-trash-path-shadow-scan"
+  SCAN_CRON_LINE="30 9 * * * $BIN/check-path-shadows.sh $SCAN_CRON_MARKER"
+  if crontab -l 2>/dev/null | grep -qF "$SCAN_CRON_MARKER"; then
+    echo "  PATH-shadow scan cron already installed (runs daily)"
+  else
+    ( crontab -l 2>/dev/null; echo "$SCAN_CRON_LINE" ) | crontab -
+    echo "  PATH-shadow scan cron installed (runs daily)"
+  fi
+fi
+
+# Wire the sticky banner into the user's shell rc (idempotent, clearly fenced).
+_AIT_BANNER_BEGIN="# >>> ai-trash banner >>>"
+_AIT_BANNER_END="# <<< ai-trash banner <<<"
+for _rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
+  [[ -e "$_rc" ]] || continue
+  if grep -qF "$_AIT_BANNER_BEGIN" "$_rc" 2>/dev/null; then
+    continue   # already wired
+  fi
+  {
+    printf '%s\n' "$_AIT_BANNER_BEGIN"
+    printf '%s\n' "[ -f \"$BIN/ai-trash-banner.sh\" ] && . \"$BIN/ai-trash-banner.sh\""
+    printf '%s\n' "$_AIT_BANNER_END"
+  } >> "$_rc"
+  echo "  banner hook added to $_rc"
+done
+
 # ─── Done ──────────────────────────────────────────────────────────────
 
 if [[ "$PLATFORM" == "Darwin" ]]; then
@@ -178,7 +230,7 @@ for c in "${CANDIDATES[@]}"; do
   [[ "$c" == "$BIN" ]] && continue
   if [[ -f "$c/rm_wrapper.sh" ]] && grep -q "ai-trash" "$c/rm_wrapper.sh" 2>/dev/null; then
     echo "  removing stale install from $c"
-    for f in ai-trash-lib.sh rm_wrapper.sh git_wrapper.sh find_wrapper.sh rsync_wrapper.sh ai-trash ai-trash-cleanup; do
+    for f in ai-trash-lib.sh rm_wrapper.sh git_wrapper.sh find_wrapper.sh rsync_wrapper.sh ai-trash ai-trash-cleanup check-path-shadows.sh ai-trash-banner.sh; do
       sudo rm -f "$c/$f"
     done
     for cmd in rm rmdir unlink git find rsync; do

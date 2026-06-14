@@ -23,6 +23,8 @@ if [[ -d /dev/fd ]]; then
   done
   unset _aitfd
 else
+  # No /dev/fd (rare on macOS/Linux): bounded numeric close that stops below
+  # bash's script descriptor (255) so we never clobber it.
   for (( _aitfd = 3; _aitfd < 250; _aitfd++ )); do
     eval "exec ${_aitfd}>&-" 2>/dev/null || true
   done
@@ -55,44 +57,16 @@ while [[ -L "$_WRAPPER_PATH" ]]; do _WRAPPER_PATH=$(readlink "$_WRAPPER_PATH"); 
 # shellcheck source=ai-trash-lib.sh
 source "$(cd "$(dirname "$_WRAPPER_PATH")" && pwd)/ai-trash-lib.sh"
 
+# Recursion guard (belt + suspenders) — see _ait_recursion_guard in the library.
+# Previously find resolved the real binary with only a basename skip and NO
+# magic-byte check, so a foreign `find` script wrapper could have been re-entered;
+# the shared resolver below closes that gap.
+_ait_recursion_guard aitrash-find find "$@"
+
 REAL_CMD="find"
 
-# ─── Find the real find binary (skip ourselves in PATH) ────────────────
-_find_real_find() {
-  local wrapper_dir _wp="${BASH_SOURCE[0]}"
-  while [[ -L "$_wp" ]]; do _wp=$(readlink "$_wp"); done
-  wrapper_dir=$(cd "$(dirname "$_wp")" && pwd)
-
-  local IFS=:
-  for dir in $PATH; do
-    local resolved
-    resolved=$(cd "$dir" 2>/dev/null && pwd) || continue
-    [[ "$resolved" == "$wrapper_dir" ]] && continue
-    if [[ -x "$dir/find" ]]; then
-      # Skip if this is a symlink that resolves to our wrapper
-      local candidate="$dir/find"
-      while [[ -L "$candidate" ]]; do candidate=$(readlink "$candidate"); done
-      [[ "$(basename "$candidate")" == "find_wrapper.sh" ]] && continue
-      printf '%s' "$dir/find"
-      return
-    fi
-  done
-
-  # Fallback to common locations. Resolve symlinks and skip self so we
-  # never return our own wrapper (which would cause infinite re-entry).
-  for f in /usr/bin/find /bin/find; do
-    [[ -x "$f" ]] || continue
-    local candidate="$f"
-    while [[ -L "$candidate" ]]; do candidate=$(readlink "$candidate"); done
-    [[ "$(basename "$candidate")" == "find_wrapper.sh" ]] && continue
-    printf '%s' "$f"; return
-  done
-
-  echo "ai-trash find wrapper: cannot find real find binary" >&2
-  exit 127
-}
-
-REAL_FIND=$(_find_real_find)
+# Resolve the real find binary via the shared, magic-byte-filtered resolver.
+REAL_FIND=$(_ait_resolve_real find) || exit 127
 
 # ─── Guards ────────────────────────────────────────────────────────────
 # Non-user contexts: instant passthrough

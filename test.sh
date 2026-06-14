@@ -52,6 +52,50 @@ _ai_trash() {
   HOME="$TEST_HOME" bash "$REPO_DIR/ai-trash" "$@" 2>&1 || true
 }
 
+# ─── Portable timeout ──────────────────────────────────────────────────
+# Run a command with a wall-clock deadline. coreutils `timeout` is NOT
+# present on stock macOS (only after `brew install coreutils`), so a bare
+# `timeout ...` aborts the whole suite with 127 under `set -e` on a clean
+# macOS runner while passing on Linux and on dev machines that happen to
+# have coreutils. Resolve the real binary into $_TIMEOUT (`timeout` or
+# `gtimeout`) and fall back to a pure-bash watchdog function only when
+# neither exists. Returns 124 on timeout, matching coreutils, so the hang
+# regression tests detect a deadline breach the same way on every platform.
+#
+# IMPORTANT: call sites use `"$_TIMEOUT" <secs> <cmd...>` as a SIMPLE COMMAND,
+# never via a wrapper function. A function call scopes a caller's `2>file`
+# redirect to the whole function body, so bash's asynchronous job-control
+# death notices ("<pid> Killed: 9 ...", emitted when it reaps a signalled
+# descendant from an earlier test) would land inside that captured stderr and
+# fail the byte-empty-stderr assertions. Invoking the resolved binary directly
+# keeps the redirect scoped to the deadline'd command alone, exactly as a bare
+# `timeout` would.
+# Usage: "$_TIMEOUT" <seconds> <command> [args...]
+_timeout_fallback() {
+  local _secs="$1"; shift
+  "$@" &
+  local _pid=$! _i=0
+  while kill -0 "$_pid" 2>/dev/null; do
+    if (( _i >= _secs * 5 )); then
+      kill -TERM "$_pid" 2>/dev/null || true
+      sleep 0.5
+      kill -KILL "$_pid" 2>/dev/null || true
+      wait "$_pid" 2>/dev/null || true
+      return 124
+    fi
+    sleep 0.2
+    _i=$(( _i + 1 ))
+  done
+  wait "$_pid"
+}
+if command -v timeout >/dev/null 2>&1; then
+  _TIMEOUT=timeout
+elif command -v gtimeout >/dev/null 2>&1; then
+  _TIMEOUT=gtimeout
+else
+  _TIMEOUT=_timeout_fallback
+fi
+
 # ─── Config helpers ────────────────────────────────────────────────────
 _set_mode() {
   cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
@@ -1276,7 +1320,7 @@ mkdir -p "$_ps_fakebin"
 rm -f "$_ps_sentinel"
 printf '#!/bin/bash\necho called >> "%s"\nexec /bin/ps "$@"\n' "$_ps_sentinel" > "$_ps_fakebin/ps"
 chmod +x "$_ps_fakebin/ps"
-timeout 12 env -u CLAUDECODE -u CODEX_SANDBOX -u OPENCLAW_SHELL \
+"$_TIMEOUT" 12 env -u CLAUDECODE -u CODEX_SANDBOX -u OPENCLAW_SHELL \
   HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=Apple_Terminal \
   PATH="$_ps_fakebin:$PATH" \
   bash "$GIT_LINK" -C "$GIT_REPO" status </dev/null >/dev/null 2>&1
@@ -1319,13 +1363,19 @@ _section "git_wrapper: resolves real git via a relative symlink without stderr n
 _rel_bin="$WORK_DIR/relsym/bin"
 _rel_cellar="$WORK_DIR/relsym/Cellar"
 mkdir -p "$_rel_bin" "$_rel_cellar"
-cp /bin/echo "$_rel_cellar/git"        # a Mach-O binary stand-in (not a #! script)
-chmod +x "$_rel_cellar/git"
+# A Mach-O binary stand-in (not a #! script) for the resolved "real git".
+# Symlink to /bin/echo rather than COPYING it: on Apple Silicon macOS the
+# kernel SIGKILLs a copied system binary because the code signature does not
+# validate at the new path (exit 137). The wrapper still reads the magic
+# bytes and exec's correctly, but the killed stand-in's bash job-control
+# notice ("Killed: 9") would pollute the captured stderr below and fail the
+# assertion. A symlink exec's the real, validly-signed /bin/echo (exit 0).
+ln -sf /bin/echo "$_rel_cellar/git"
 ( cd "$_rel_bin" && ln -sf "../Cellar/git" git )   # relative symlink, Homebrew-style
 # Capture stderr to a file (no command substitution, '|| true' so a non-zero or
 # signalled wrapper exit can never abort the suite under set -e). We assert only
 # on whether the wrapper leaked the relative-path error to stderr.
-timeout 12 env HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
+"$_TIMEOUT" 12 env HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
   PATH="$_rel_bin:/usr/bin:/bin" \
   bash "$GIT_LINK" -C "$GIT_REPO" rev-parse --is-inside-work-tree \
   </dev/null >/dev/null 2>"$WORK_DIR/relsym.err" || true
@@ -1805,35 +1855,173 @@ _section "wrappers: exhaustive fd-close removes a leaked pipe on a HIGH fd (beyo
 # slipped straight through before. We leak a pipe write-end on fd 250, run a
 # wrapper, and have its resolved "real" binary report whether fd 250 survived.
 # Exercised through find_wrapper because its fd-close block is byte-identical to
-# the git/rm/rsync copies, and _find_real_find accepts a script stand-in.
+# the git/rm/rsync copies. The "real find" stand-in is a symlink to the python3
+# BINARY (not a #! script): the shared resolver _ait_resolve_real now skips any
+# #! script by magic byte, so the probe must be a genuine binary -- which is
+# also a faithful test, since find_wrapper passes its args straight through to
+# the resolved binary, here `python3 -c <probe>`.
 _fdreport="$WORK_DIR/fd250-report"
 _fake_find_dir="$WORK_DIR/fake-find-bin"
 _fd_fifo="$WORK_DIR/fd250.fifo"
+_py_real="$(command -v python3 2>/dev/null || true)"
 mkdir -p "$_fake_find_dir"
-# Fake "real find": records whether the leaked high fd is still open, then no-ops.
-printf '#!/bin/bash\nif [[ -e /dev/fd/250 ]]; then echo OPEN > "%s"; else echo CLOSED > "%s"; fi\n' \
-  "$_fdreport" "$_fdreport" > "$_fake_find_dir/find"
-chmod +x "$_fake_find_dir/find"
-/bin/rm -f "$_fdreport" "$_fd_fifo"
-mkfifo "$_fd_fifo" 2>/dev/null || true
-# Hold the FIFO read end open so opening the write end below does not block.
-cat "$_fd_fifo" >/dev/null &
-_fd_rpid=$!
-sleep 0.2
-# Leak a PIPE write-end on fd 250 (above the old 200 ceiling) into this shell,
-# then run the wrapper, which inherits it. A non-delete find arg passes straight
-# through to the resolved real binary, which reports whether fd 250 survived.
-exec 250>"$_fd_fifo"
-timeout 12 env HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
-  PATH="$_fake_find_dir:/usr/bin:/bin" \
-  bash "$FIND_LINK" /tmp -name nonexistent-xyz </dev/null >/dev/null 2>&1 || true
-exec 250>&-
-kill "$_fd_rpid" 2>/dev/null || true
-_fdstate="$(cat "$_fdreport" 2>/dev/null)"
-if [[ "$_fdstate" == "CLOSED" ]]; then
-  _pass "leaked pipe on fd 250 closed before exec (exhaustive, no 200 ceiling)"
+if [[ -z "$_py_real" ]]; then
+  _fail "python3 not found: cannot run the fd-250 binary-probe test"
 else
-  _fail "leaked pipe on fd 250 survived into the real binary (report='$_fdstate'): fd-close not exhaustive"
+  # "real find" = the python3 binary. The resolver accepts it (not a #! script);
+  # find_wrapper execs it with our pass-through args: `python3 -c <probe>`.
+  ln -sf "$_py_real" "$_fake_find_dir/find"
+  _fd_probe='import os,sys; open(os.environ["FDREPORT"],"w").write("OPEN" if os.path.exists("/dev/fd/250") else "CLOSED")'
+  /bin/rm -f "$_fdreport" "$_fd_fifo"
+  mkfifo "$_fd_fifo" 2>/dev/null || true
+  # Hold the FIFO read end open so opening the write end below does not block.
+  cat "$_fd_fifo" >/dev/null &
+  _fd_rpid=$!
+  sleep 0.2
+  # Leak a PIPE write-end on fd 250 (above the old 200 ceiling) into this shell,
+  # then run the wrapper, which inherits it. Args pass straight through to the
+  # resolved real binary (python3), which reports whether fd 250 survived.
+  exec 250>"$_fd_fifo"
+  "$_TIMEOUT" 12 env HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
+    FDREPORT="$_fdreport" PATH="$_fake_find_dir:/usr/bin:/bin" \
+    bash "$FIND_LINK" -c "$_fd_probe" </dev/null >/dev/null 2>&1 || true
+  exec 250>&-
+  kill "$_fd_rpid" 2>/dev/null || true
+  _fdstate="$(cat "$_fdreport" 2>/dev/null || true)"
+  if [[ "$_fdstate" == "CLOSED" ]]; then
+    _pass "leaked pipe on fd 250 closed before exec (exhaustive, no 200 ceiling)"
+  else
+    _fail "leaked pipe on fd 250 survived into the real binary (report='$_fdstate'): fd-close not exhaustive"
+  fi
+fi
+
+_section "lib: _ait_resolve_real returns a real binary, never a #! script wrapper"
+# The shared resolver is the single source of truth that makes wrapper-into-
+# wrapper recursion impossible by construction: it must never return a #! script.
+_resolver_ok=true
+for _cmd in git find rsync; do
+  _rp=$(bash -c 'source "$1"/ai-trash-lib.sh; _ait_resolve_real "$2"' _ "$REPO_DIR" "$_cmd" 2>/dev/null || true)
+  if [[ -z "$_rp" || ! -x "$_rp" ]]; then
+    _resolver_ok=false; _resolver_why="$_cmd -> '$_rp' not executable"; break
+  fi
+  _rmagic=$(head -c2 "$_rp" 2>/dev/null || true)
+  if [[ "$_rmagic" == '#!' ]]; then
+    _resolver_ok=false; _resolver_why="$_cmd resolved to a #! script ($_rp)"; break
+  fi
+done
+if [[ "$_resolver_ok" == true ]]; then
+  _pass "_ait_resolve_real returns a non-script binary for git/find/rsync"
+else
+  _fail "_ait_resolve_real: $_resolver_why"
+fi
+
+_section "lib: recursion guard breaks both ways (belt: tag seen; suspenders: depth>8)"
+# Belt: if the wrapper's own tag is already in the chain, exec a real binary now.
+# Suspenders: if depth ever exceeds 8, bail to a real binary. Both must TERMINATE
+# (the historical failure was an unbounded loop pinning a core), so we wrap in
+# timeout and assert the real binary actually ran (git --version output).
+_belt_out=$("$_TIMEOUT" 8 bash -c '
+  source "$1"/ai-trash-lib.sh
+  export AI_GIT_WRAPPER_CHAIN="aitrash"
+  _ait_recursion_guard aitrash git --version
+  echo "REACHED-PAST-GUARD"' _ "$REPO_DIR" 2>/dev/null || true)
+_susp_out=$("$_TIMEOUT" 8 bash -c '
+  source "$1"/ai-trash-lib.sh
+  export AI_GIT_WRAPPER_DEPTH=9
+  _ait_recursion_guard aitrash git --version
+  echo "REACHED-PAST-GUARD"' _ "$REPO_DIR" 2>/dev/null || true)
+if [[ "$_belt_out" == git\ version* && "$_belt_out" != *REACHED-PAST-GUARD* \
+   && "$_susp_out" == git\ version* && "$_susp_out" != *REACHED-PAST-GUARD* ]]; then
+  _pass "recursion guard breaks to real git on tag-seen and on depth>8 (no loop)"
+else
+  _fail "recursion guard did not break correctly (belt='$_belt_out' susp='$_susp_out')"
+fi
+
+_section "wrappers: fd-close block is byte-identical across all four wrappers"
+# The fd-close prelude is the one piece that must stay copied inline in each
+# wrapper (it has to run before the first fork, so it cannot be a sourced
+# function). Guard against the copies silently diverging: extract the block
+# (from `if [[ -d /dev/fd ]]` to its closing `fi`) and compare checksums.
+_extract_fdclose() { awk '/^if \[\[ -d \/dev\/fd \]\]; then$/{f=1} f{print} f&&/^fi$/{exit}' "$1"; }
+_fdsum_ref=$(_extract_fdclose "$REPO_DIR/git_wrapper.sh" | shasum | awk '{print $1}')
+_fdclose_ok=true
+for _w in rm_wrapper.sh find_wrapper.sh rsync_wrapper.sh; do
+  _sum=$(_extract_fdclose "$REPO_DIR/$_w" | shasum | awk '{print $1}')
+  if [[ "$_sum" != "$_fdsum_ref" || -z "$_fdsum_ref" ]]; then
+    _fdclose_ok=false; _fdclose_why="$_w sum=$_sum != git sum=$_fdsum_ref"; break
+  fi
+done
+if [[ "$_fdclose_ok" == true ]]; then
+  _pass "fd-close block identical in git/rm/find/rsync wrappers"
+else
+  _fail "fd-close block DIVERGED: $_fdclose_why"
+fi
+
+_section "wrappers: every wrapper invokes the shared recursion guard"
+_guard_ok=true
+for _w in git_wrapper.sh rm_wrapper.sh find_wrapper.sh rsync_wrapper.sh; do
+  if ! grep -q "_ait_recursion_guard" "$REPO_DIR/$_w"; then
+    _guard_ok=false; _guard_why="$_w does not call _ait_recursion_guard"; break
+  fi
+done
+if [[ "$_guard_ok" == true ]]; then
+  _pass "all four wrappers call _ait_recursion_guard"
+else
+  _fail "missing recursion guard: $_guard_why"
+fi
+
+_section "check-path-shadows: quarantines a stale ai-trash copy, surfaces foreign dups, self-clears"
+# The scanner must run under macOS's stock /bin/bash 3.2 (the launchd shebang),
+# so exercise it there explicitly. Three behaviours in one isolated PATH:
+#   (1) a stale ai-trash wrapper copy ahead of the canonical install -> auto-
+#       quarantined (the ~/bin/rsync incident), no banner;
+#   (2) two foreign UNGUARDED scripts stacked on one command -> banner set;
+#   (3) once the duplicate is gone -> banner self-clears.
+_sc="$REPO_DIR/scripts/check-path-shadows.sh"
+_scT="$WORK_DIR/shadow-test"
+mkdir -p "$_scT/install" "$_scT/stale" "$_scT/state" "$_scT/state2" "$_scT/f1" "$_scT/f2"
+printf '#!/bin/bash\n# ai-trash zt wrapper\n_ait_recursion_guard zt zt "$@"\n' > "$_scT/install/zt_wrapper.sh"
+chmod +x "$_scT/install/zt_wrapper.sh"; ln -sf "$_scT/install/zt_wrapper.sh" "$_scT/install/zt"
+printf '#!/bin/bash\n# ai-trash zt wrapper (stale)\necho stale\n' > "$_scT/stale/zt_wrapper.sh"
+chmod +x "$_scT/stale/zt_wrapper.sh"; ln -sf "$_scT/stale/zt_wrapper.sh" "$_scT/stale/zt"
+printf '#!/bin/bash\necho one\n' > "$_scT/f1/zz"; chmod +x "$_scT/f1/zz"
+printf '#!/bin/bash\necho two\n' > "$_scT/f2/zz"; chmod +x "$_scT/f2/zz"
+
+# The scanner exits non-zero by design (2=auto-fixed, 1=surfaced); capture rc
+# via if/else so the suite's `set -e` does not abort on those expected exits.
+# (1) quarantine — stale ahead of canonical on PATH
+if HOME="$_scT" AI_TRASH_INSTALL_DIR="$_scT/install" AI_TRASH_STATE_DIR="$_scT/state" \
+     AI_TRASH_SHADOW_CMDS="zt" PATH="$_scT/stale:$_scT/install:/usr/bin:/bin" \
+     /bin/bash "$_sc" >/dev/null 2>&1
+then _sc_rc1=0; else _sc_rc1=$?; fi
+# (2) surface — two foreign unguarded scripts. Capture the banner state NOW,
+# before (3) reuses the same state dir and clears it.
+if HOME="$_scT" AI_TRASH_INSTALL_DIR="$_scT/install" AI_TRASH_STATE_DIR="$_scT/state2" \
+     AI_TRASH_SHADOW_CMDS="zz" PATH="$_scT/f1:$_scT/f2:/usr/bin:/bin" \
+     /bin/bash "$_sc" >/dev/null 2>&1
+then _sc_rc2=0; else _sc_rc2=$?; fi
+_sc_banner2=no; [[ -e "$_scT/state2/path-shadow-warning" ]] && _sc_banner2=yes
+# (3) self-clear — only one foreign script now (same state dir as (2))
+if HOME="$_scT" AI_TRASH_INSTALL_DIR="$_scT/install" AI_TRASH_STATE_DIR="$_scT/state2" \
+     AI_TRASH_SHADOW_CMDS="zz" PATH="$_scT/f1:/usr/bin:/bin" \
+     /bin/bash "$_sc" >/dev/null 2>&1
+then _sc_rc3=0; else _sc_rc3=$?; fi
+
+if [[ "$_sc_rc1" == 2 && ! -e "$_scT/stale/zt" && -e "$_scT/install/zt" \
+   && ! -e "$_scT/state/path-shadow-warning" ]]; then
+  _pass "scanner auto-quarantined stale ai-trash copy (canonical kept, no banner)"
+else
+  _fail "scanner quarantine: rc=$_sc_rc1 stale_gone=$([[ -e "$_scT/stale/zt" ]] && echo no || echo yes) canonical=$([[ -e "$_scT/install/zt" ]] && echo yes || echo no)"
+fi
+if [[ "$_sc_rc2" == 1 && "$_sc_banner2" == yes ]]; then
+  _pass "scanner surfaced two stacked unguarded scripts via the banner flag"
+else
+  _fail "scanner surface: rc=$_sc_rc2 banner=$_sc_banner2"
+fi
+if [[ "$_sc_rc3" == 0 && ! -e "$_scT/state2/path-shadow-warning" ]]; then
+  _pass "scanner banner self-cleared once the duplicate was gone"
+else
+  _fail "scanner self-clear: rc=$_sc_rc3 banner=$([[ -e "$_scT/state2/path-shadow-warning" ]] && echo still-set || echo cleared)"
 fi
 
 _section "find_wrapper: -delete routes through rm wrapper"
@@ -2097,19 +2285,22 @@ if command -v rsync >/dev/null 2>&1; then
   /bin/rm -rf "$rsync_src4" "$rsync_dest4" "$rsync_user_backup"
 
   _section "rsync_wrapper: remote destination passes through unchanged"
+  # The "real rsync" stand-in must be a genuine BINARY now that _ait_resolve_real
+  # skips any #! script by magic byte. /bin/echo accepts arbitrary args and prints
+  # them, so capturing its stdout reveals exactly the final arg list the wrapper
+  # passed through -- letting us assert no --backup-dir was injected for a remote
+  # destination. (BSD /bin/echo only treats a leading -n specially; -a/--delete/
+  # --backup-dir all print literally.)
   fake_rsync_dir="$WORK_DIR/fake-rsync"
   mkdir -p "$fake_rsync_dir"
-  cat > "$fake_rsync_dir/rsync" <<'EOF'
-#!/bin/bash
-printf '%s\n' "$*" > "$FAKE_RSYNC_LOG"
-EOF
-  chmod 755 "$fake_rsync_dir/rsync"
-  FAKE_RSYNC_LOG="$WORK_DIR/fake-rsync.log" HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
-    PATH="$fake_rsync_dir:$PATH" bash "$RSYNC_LINK" -a --delete "$WORK_DIR/" "host:/remote/path" 2>/dev/null || true
-  if [[ -f "$WORK_DIR/fake-rsync.log" ]] && ! grep -q -- "--backup-dir" "$WORK_DIR/fake-rsync.log"; then
+  ln -sf /bin/echo "$fake_rsync_dir/rsync"
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
+    PATH="$fake_rsync_dir:$PATH" bash "$RSYNC_LINK" -a --delete "$WORK_DIR/" "host:/remote/path" \
+    > "$WORK_DIR/fake-rsync.log" 2>/dev/null || true
+  if [[ -s "$WORK_DIR/fake-rsync.log" ]] && ! grep -q -- "--backup-dir" "$WORK_DIR/fake-rsync.log"; then
     _pass "rsync remote: no ai-trash backup options injected"
   else
-    _fail "rsync remote: wrapper injected backup options or fake rsync did not run"
+    _fail "rsync remote: wrapper injected backup options or fake rsync did not run (log='$(cat "$WORK_DIR/fake-rsync.log" 2>/dev/null || true)')"
   fi
   /bin/rm -rf "$fake_rsync_dir" "$WORK_DIR/fake-rsync.log"
   fi

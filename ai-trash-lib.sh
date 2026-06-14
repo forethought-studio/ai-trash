@@ -73,6 +73,80 @@ BYPASS_TRASH_PATTERNS=()
 # shellcheck source=/dev/null
 [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
 
+# ─── Real-binary resolution + recursion guard (shared across all wrappers) ──
+# Single source of truth for two things that used to be copy-pasted (and had
+# DIVERGED) into each wrapper, which is how the 2026-06-14 CPU spin happened
+# (see memory/git_wrapper_thundering_herd.md): two script-based git wrappers on
+# PATH each resolved "the real git" differently, one without a magic-byte check,
+# so they re-exec'd each other unbounded and pinned a core.
+#
+# These run AFTER each wrapper's inline fd-close (which must stay inline because
+# it has to execute before the first fork). By the time a wrapper sources this
+# library and calls these, leaked pipe fds are already closed, so the command
+# substitutions below cannot deadlock.
+
+# _ait_resolve_real <name> — echo the absolute path of the real <name> binary.
+# INVARIANT enforced structurally: the result is ALWAYS a compiled binary whose
+# first two bytes are not '#!', never a shell-script wrapper. This makes
+# wrapper-into-wrapper mutual recursion impossible regardless of PATH order.
+# Walks PATH first, then a standard fallback set. Skips any candidate that is
+# (a) a symlink resolving to a *_wrapper.sh, or (b) a '#!' script of any kind.
+# Returns 127 and prints to stderr if no real binary is found.
+# Usage: REAL_GIT=$(_ait_resolve_real git)
+_ait_resolve_real() {
+  local name="$1" dir candidate _magic
+  local -a dirs=()
+  local IFS=:
+  read -ra dirs <<<"$PATH"
+  IFS=' '
+  dirs+=(/opt/homebrew/bin /usr/local/bin /usr/bin /bin)
+  for dir in "${dirs[@]}"; do
+    [[ -n "$dir" && -x "$dir/$name" && ! -d "$dir/$name" ]] || continue
+    candidate="$dir/$name"
+    while [[ -L "$candidate" ]]; do candidate=$(readlink "$candidate"); done
+    [[ "${candidate##*/}" == *_wrapper.sh ]] && continue   # never our own wrapper
+    # Read the magic byte from the PATH entry itself (the OS follows the link),
+    # not the possibly-relative readlink target which may not resolve from CWD.
+    _magic=""; read -rn2 _magic 2>/dev/null < "$dir/$name" || true
+    [[ "$_magic" == '#!' ]] && continue                    # never ANY script wrapper
+    printf '%s' "$dir/$name"
+    return 0
+  done
+  echo "ai-trash: cannot find real $name binary" >&2
+  return 127
+}
+
+# _ait_break_to_real <name> [args...] — exec the real <name> binary and stop.
+# Used by the recursion guard to escape a detected loop. Falls back to
+# /usr/bin/<name> only if resolution fails entirely.
+_ait_break_to_real() {
+  local name="$1"; shift
+  local real
+  real=$(_ait_resolve_real "$name") && exec "$real" "$@"
+  exec "/usr/bin/$name" "$@"
+}
+
+# _ait_recursion_guard <tag> <name> [args...] — belt + suspenders against
+# wrapper-into-wrapper mutual re-exec. Mirrored (with a different tag) in the
+# cross-agent shim at ~/.claude/bin/git, which cannot source this library.
+#   Belt (prevent):   if THIS wrapper's <tag> is already in AI_GIT_WRAPPER_CHAIN
+#                     we are being recursed into -> break out to a real binary.
+#   Suspenders (bail): if depth in AI_GIT_WRAPPER_DEPTH ever exceeds 8, bail to a
+#                     real binary instead of spinning forever.
+# The AI_GIT_WRAPPER_* names are kept (despite being git-flavoured) so the shim,
+# which already uses them, stays interoperable. The depth counter is shared
+# across all wrappers; the tag is per-command so each detects only its own loop.
+_ait_recursion_guard() {
+  local tag="$1" name="$2"; shift 2
+  AI_GIT_WRAPPER_DEPTH=$(( ${AI_GIT_WRAPPER_DEPTH:-0} + 1 ))
+  export AI_GIT_WRAPPER_DEPTH
+  case ":${AI_GIT_WRAPPER_CHAIN:-}:" in
+    *":$tag:"*) _ait_break_to_real "$name" "$@" ;;
+  esac
+  (( AI_GIT_WRAPPER_DEPTH > 8 )) && _ait_break_to_real "$name" "$@"
+  export AI_GIT_WRAPPER_CHAIN="${AI_GIT_WRAPPER_CHAIN:+$AI_GIT_WRAPPER_CHAIN:}$tag"
+}
+
 # ─── Selective mode: detect AI tool in the process call chain ──────────
 _is_ai_process() {
   # Tier 1: environment variable check — instant, no process lookup needed
