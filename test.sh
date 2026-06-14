@@ -1261,6 +1261,56 @@ else
   _fail "git passthrough: unexpected output: $out"
 fi
 
+_section "git_wrapper: non-destructive command does no process inspection and does not hang"
+# Regression guard for the 2026-06-14 load/hang incident. Two coupled root causes:
+#  (1) _is_ai_process ran `ps -A` (an O(all-processes) walk) on EVERY git call,
+#      including non-destructive passthrough, which melted the machine under load
+#      and under an exec-scanning EDR (Avast Endpoint Security).
+#  (2) command substitutions inherited caller pipe fds and hung forever (no EOF).
+# A non-destructive `git status` from a NON-AI-env caller (so the old Tier-2 ps
+# walk is forced) must invoke ps ZERO times and finish well within a timeout.
+# `ps` is shadowed by a sentinel; the call is wrapped in `timeout`.
+_ps_fakebin="$WORK_DIR/ps-sentinel-bin"
+_ps_sentinel="$WORK_DIR/ps-was-called"
+mkdir -p "$_ps_fakebin"
+rm -f "$_ps_sentinel"
+printf '#!/bin/bash\necho called >> "%s"\nexec /bin/ps "$@"\n' "$_ps_sentinel" > "$_ps_fakebin/ps"
+chmod +x "$_ps_fakebin/ps"
+timeout 12 env -u CLAUDECODE -u CODEX_SANDBOX -u OPENCLAW_SHELL \
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=Apple_Terminal \
+  PATH="$_ps_fakebin:$PATH" \
+  bash "$GIT_LINK" -C "$GIT_REPO" status </dev/null >/dev/null 2>&1
+_hot_rc=$?
+if [[ "$_hot_rc" == 124 ]]; then
+  _fail "git status passthrough hung (timeout): command-substitution fd-inheritance hang"
+elif [[ -f "$_ps_sentinel" ]]; then
+  _fail "git status passthrough invoked ps $(wc -l < "$_ps_sentinel" | tr -d ' ') time(s): process inspection on hot path"
+else
+  _pass "git status passthrough: no ps invocation, no hang"
+fi
+
+_section "git_wrapper: resolves real git binary, not another git wrapper script in PATH"
+# _find_real_git must return the real git BINARY, never another shell-script git
+# wrapper (e.g. a cross-agent shim) that happens to be earlier in PATH. Two
+# PATH-walking wrappers that each skip only themselves would exec each other,
+# adding a hop at best and looping/hanging at worst. We put a script "shim git"
+# first in PATH and confirm the wrapper runs the real binary instead.
+_shim_dir="$WORK_DIR/fake-git-shim"
+mkdir -p "$_shim_dir"
+printf '#!/bin/bash\necho chained >> "%s/shim-was-run"\nexit 0\n' "$WORK_DIR" > "$_shim_dir/git"
+chmod +x "$_shim_dir/git"
+rm -f "$WORK_DIR/shim-was-run"
+_chain_out=$(env HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
+  PATH="$_shim_dir:/usr/bin:/bin" \
+  bash "$GIT_LINK" -C "$GIT_REPO" rev-parse --is-inside-work-tree </dev/null 2>/dev/null)
+if [[ -f "$WORK_DIR/shim-was-run" ]]; then
+  _fail "git_wrapper chained into the shim wrapper as 'real git'"
+elif [[ "$_chain_out" == "true" ]]; then
+  _pass "git_wrapper resolved the real git binary, skipping the shim wrapper"
+else
+  _fail "git_wrapper: unexpected rev-parse output '$_chain_out'"
+fi
+
 _section "git_wrapper: git clean -fd snapshots untracked files"
 (cd "$GIT_REPO" && echo "untracked content" > untracked-file.txt)
 before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')

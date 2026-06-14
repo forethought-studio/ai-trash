@@ -5,6 +5,27 @@
 # copy affected files to ai-trash before letting git run normally.
 # Non-AI callers and non-destructive subcommands pass through instantly.
 
+# ── Close inherited file descriptors >= 3 (hang-prevention, must run first) ──
+# When this wrapper is invoked with extra fds open (brew's coordination fd, or
+# an AI agent's stdout/stderr capture pipes), those fds leak into our $(...)
+# command substitutions, which then block forever waiting for an EOF that never
+# arrives because a forked child still holds the pipe's write end. That was the
+# historical "git hangs" failure. Closing every inherited fd in [3,199] up front
+# makes that hang class impossible by construction. Real git uses only stdin/
+# stdout/stderr, so this never changes git behaviour.
+if [[ -e /dev/fd ]]; then
+  for _aitfd in /dev/fd/*; do
+    _aitfd=${_aitfd##*/}
+    case "$_aitfd" in ''|*[!0-9]*) continue ;; esac
+    # Skip 0/1/2 (stdio) and >= 200 (bash's own internal/script descriptors,
+    # e.g. 255). The leaked pipes that cause the hang are always low-numbered.
+    if (( _aitfd >= 3 && _aitfd < 200 )); then
+      eval "exec ${_aitfd}>&-" 2>/dev/null || true
+    fi
+  done
+  unset _aitfd
+fi
+
 # Homebrew bypass: brew shells out to git for analytics/config checks many
 # times per invocation. We have nothing to snapshot for brew operations, and
 # the wrapper has historically hung on this path when brew's coordination
@@ -52,6 +73,11 @@ _find_real_git() {
       local candidate="$dir/git"
       while [[ -L "$candidate" ]]; do candidate=$(readlink "$candidate"); done
       [[ "$(basename "$candidate")" == "git_wrapper.sh" ]] && continue
+      # Skip any git that is itself a shell-script wrapper (e.g. another agent's
+      # git shim); only a compiled binary is real git. Two PATH-walking wrappers
+      # that each skip only themselves would otherwise exec each other (hang).
+      local _magic=""; read -rn2 _magic < "$candidate" 2>/dev/null
+      [[ "$_magic" == '#!' ]] && continue
       printf '%s' "$dir/git"
       return
     fi
@@ -64,6 +90,8 @@ _find_real_git() {
     local candidate="$g"
     while [[ -L "$candidate" ]]; do candidate=$(readlink "$candidate"); done
     [[ "$(basename "$candidate")" == "git_wrapper.sh" ]] && continue
+    local _magic=""; read -rn2 _magic < "$candidate" 2>/dev/null
+    [[ "$_magic" == '#!' ]] && continue
     printf '%s' "$g"; return
   done
 
@@ -89,10 +117,9 @@ if [[ "${GIT_PROTECTION:-true}" != true ]]; then
   exec "$REAL_GIT" "$@"
 fi
 
-# Non-AI callers: instant passthrough
-if ! _is_ai_process; then
-  exec "$REAL_GIT" "$@"
-fi
+# (AI-caller detection deliberately deferred until AFTER the subcommand is
+#  classified, see below. It walks the process tree with `ps -A`, which must
+#  never run on the non-destructive hot path.)
 
 # ─── Parse git global options to find the subcommand ───────────────────
 _get_git_subcommand() {
@@ -161,11 +188,25 @@ _get_global_args() {
 
 SUBCMD=$(_get_git_subcommand "$@")
 
-# Non-destructive subcommands: instant passthrough
+# ─── Hot path: classify BEFORE any process inspection ──────────────────
+# The overwhelming majority of git calls are non-destructive (status, log,
+# diff, rev-parse, config, add, commit, fetch, clone, ...). They pass straight
+# through to real git here, WITHOUT walking the process tree. The `ps -A` walk
+# in _is_ai_process is O(all processes); running it on every git call (rather
+# than only the rare destructive ones) was the root cause of the load/hang
+# incidents, especially under an exec-scanning EDR. Only the small destructive
+# set falls through to AI detection + snapshotting.
 case "$SUBCMD" in
-  clean|checkout|restore|reset|stash|branch|push|filter-repo) ;; # handled below
+  clean|checkout|restore|reset|stash|branch|push|filter-repo) ;; # maybe destructive, handled below
   *) exec "$REAL_GIT" "$@" ;;
 esac
+
+# ─── AI-caller detection: only reached for the destructive subcommand set ──
+# We only snapshot for AI-driven destructive operations. Non-AI callers (human
+# shells, build tools) pass through untouched.
+if ! _is_ai_process; then
+  exec "$REAL_GIT" "$@"
+fi
 
 # ─── Read subcommand args into array ──────────────────────────────────
 SUB_ARGS=()

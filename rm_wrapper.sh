@@ -1,6 +1,22 @@
 #!/bin/bash
 # rm_wrapper.sh – transparent rm/rmdir/unlink replacement that routes files to ai-trash
 
+# ── Close inherited fds [3,199] before any subshell (hang-prevention) ──
+# See git_wrapper.sh for the full rationale: leaked caller fds (brew or AI-agent
+# pipes) inherited into our $(...) subshells make command substitution block
+# forever on an EOF that never arrives. Closing them up front makes that hang
+# class impossible by construction; real rm/rmdir/unlink use only stdio.
+if [[ -e /dev/fd ]]; then
+  for _aitfd in /dev/fd/*; do
+    _aitfd=${_aitfd##*/}
+    case "$_aitfd" in ''|*[!0-9]*) continue ;; esac
+    if (( _aitfd >= 3 && _aitfd < 200 )); then
+      eval "exec ${_aitfd}>&-" 2>/dev/null || true
+    fi
+  done
+  unset _aitfd
+fi
+
 # Homebrew bypass: brew shells out to rm during cleanup, uninstall, and
 # formula scripts. We have nothing to trash for brew operations, and the
 # wrapper's $(...) subshells can deadlock when brew's coordination FDs are
