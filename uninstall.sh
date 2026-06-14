@@ -45,36 +45,14 @@ if [[ "$PLATFORM" == "Darwin" ]]; then
     echo "  LaunchAgent removed"
   fi
 
-  SCAN_LABEL="com.ai-trash.path-shadow-scan"
-  SCAN_PLIST="$AGENT_DIR/${SCAN_LABEL}.plist"
-  if [[ -f "$SCAN_PLIST" ]]; then
-    launchctl bootout "gui/$(id -u)/$SCAN_LABEL" 2>/dev/null || \
-    launchctl unload "$SCAN_PLIST" 2>/dev/null || true
-    rm -f "$SCAN_PLIST"
-    echo "  PATH-shadow scan LaunchAgent removed"
-  fi
-
 else
-  # Linux: remove the cron jobs
-  for CRON_MARKER in "# ai-trash-cleanup" "# ai-trash-path-shadow-scan"; do
-    if crontab -l 2>/dev/null | grep -qF "$CRON_MARKER"; then
-      crontab -l 2>/dev/null | grep -vF "$CRON_MARKER" | crontab -
-      echo "  cron job removed ($CRON_MARKER)"
-    fi
-  done
-fi
-
-# Remove the sticky-banner hook from shell rc files (fenced block).
-for _rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
-  [[ -e "$_rc" ]] || continue
-  if grep -qF "# >>> ai-trash banner >>>" "$_rc" 2>/dev/null; then
-    # Delete the fenced block inclusive.
-    _tmp=$(mktemp)
-    sed '/# >>> ai-trash banner >>>/,/# <<< ai-trash banner <<</d' "$_rc" > "$_tmp" && mv "$_tmp" "$_rc"
-    echo "  removed banner hook from $_rc"
+  # Linux: remove the cron job
+  CRON_MARKER="# ai-trash-cleanup"
+  if crontab -l 2>/dev/null | grep -qF "$CRON_MARKER"; then
+    crontab -l 2>/dev/null | grep -vF "$CRON_MARKER" | crontab -
+    echo "  cron job removed"
   fi
-done
-rm -f "$HOME/.ai-trash/path-shadow-warning" 2>/dev/null || true
+fi
 
 # ─── Remove symlinks (only if they point to our wrappers) ──────────────
 
@@ -112,7 +90,7 @@ done
 
 # ─── Remove scripts ────────────────────────────────────────────────────
 
-for f in ai-trash-lib.sh rm_wrapper.sh git_wrapper.sh find_wrapper.sh rsync_wrapper.sh ai-trash-cleanup ai-trash check-path-shadows.sh ai-trash-banner.sh; do
+for f in ai-trash-lib.sh rm_wrapper.sh git_wrapper.sh find_wrapper.sh rsync_wrapper.sh ai-trash-cleanup ai-trash check-path-shadows.sh; do
   if [[ -f "$BIN/$f" ]]; then
     sudo rm -f "$BIN/$f"
     echo "  removed $BIN/$f"
@@ -130,7 +108,7 @@ for c in "${CANDIDATES[@]}"; do
   [[ "$c" == "$BIN" ]] && continue
   if [[ -f "$c/rm_wrapper.sh" ]] && grep -q "ai-trash" "$c/rm_wrapper.sh" 2>/dev/null; then
     echo "  removing stale install from $c"
-    for f in ai-trash-lib.sh rm_wrapper.sh git_wrapper.sh find_wrapper.sh rsync_wrapper.sh ai-trash ai-trash-cleanup check-path-shadows.sh ai-trash-banner.sh; do
+    for f in ai-trash-lib.sh rm_wrapper.sh git_wrapper.sh find_wrapper.sh rsync_wrapper.sh ai-trash ai-trash-cleanup check-path-shadows.sh; do
       sudo rm -f "$c/$f"
     done
     for cmd in rm rmdir unlink git find rsync; do

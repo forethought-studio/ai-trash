@@ -18,3 +18,8 @@ landing-*.png
 .queue/
 .backlog/
 deliverables/
+
+# Local-only PATH-shadow scan setup (the owner's machine runs the daily scan +
+# sticky banner; these are personal setup, not shipped to ai-trash users).
+scripts/ai-trash-banner.sh
+com.ai-trash.path-shadow-scan.plist
