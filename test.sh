@@ -1261,11 +1261,14 @@ ln -sf "$REPO_DIR/git_wrapper.sh" "$GIT_LINK"
 # Find real git binary, skipping ai-trash wrapper symlinks
 _find_test_real_git() {
   local IFS=:
+  local magic
   for dir in $PATH; do
     [[ -x "$dir/git" ]] || continue
     local candidate="$dir/git"
     while [[ -L "$candidate" ]]; do candidate=$(readlink "$candidate"); done
     [[ "$(basename "$candidate")" == "git_wrapper.sh" ]] && continue
+    magic=""; read -rn2 magic 2>/dev/null < "$dir/git" || true
+    [[ "$magic" == '#!' ]] && continue
     printf '%s' "$dir/git"
     return
   done
@@ -1294,7 +1297,7 @@ mkdir -p "$GIT_REPO"
   _rgit config user.name "Test"
   echo "initial" > file.txt
   _rgit add file.txt
-  _rgit commit -q -m "Initial commit"
+  _rgit commit -q -m "Initial commit" -- file.txt
 )
 
 _section "git_wrapper: non-destructive passthrough"
@@ -1495,7 +1498,7 @@ else
 fi
 
 _section "git_wrapper: non-destructive git commands unaffected"
-# Verify git log, git diff, git status, git commit all work
+# Verify git log, git diff, and git status all work
 out=$(cd "$GIT_REPO" && _git log --oneline -1 2>&1)
 if echo "$out" | grep -q "Initial commit"; then
   _pass "git passthrough: git log works"
@@ -1545,7 +1548,7 @@ fi
 (cd "$GIT_REPO" && /bin/rm -f dry-run.txt)
 
 _section "git_wrapper: git reset --soft does not snapshot"
-(cd "$GIT_REPO" && echo "soft change" > file.txt && _rgit add file.txt && _rgit commit -q -m "Soft test")
+(cd "$GIT_REPO" && echo "soft change" > file.txt && _rgit add file.txt && _rgit commit -q -m "Soft test" -- file.txt)
 before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
 (cd "$GIT_REPO" && _git reset --soft HEAD~1 2>/dev/null) || true
 after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
@@ -1655,7 +1658,7 @@ else
 fi
 
 _section "git_wrapper: git checkout -- specific file snapshots only that file"
-(cd "$GIT_REPO" && echo "mod1" > file.txt && echo "extra" > extra.txt && _rgit add extra.txt && _rgit commit -q -m "Add extra")
+(cd "$GIT_REPO" && echo "mod1" > file.txt && echo "extra" > extra.txt && _rgit add extra.txt && _rgit commit -q -m "Add extra" -- extra.txt)
 (cd "$GIT_REPO" && echo "mod-file" > file.txt && echo "mod-extra" > extra.txt)
 before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
 (cd "$GIT_REPO" && _git checkout -- file.txt 2>/dev/null)
@@ -1863,10 +1866,21 @@ _section "wrappers: exhaustive fd-close removes a leaked pipe on a HIGH fd (beyo
 _fdreport="$WORK_DIR/fd250-report"
 _fake_find_dir="$WORK_DIR/fake-find-bin"
 _fd_fifo="$WORK_DIR/fd250.fifo"
-_py_real="$(command -v python3 2>/dev/null || true)"
+_find_real_python3() {
+  local IFS=:
+  local dir magic
+  for dir in $PATH /opt/homebrew/bin /usr/local/bin /usr/bin /bin; do
+    [[ -n "$dir" && -x "$dir/python3" && ! -d "$dir/python3" ]] || continue
+    magic=""; read -rn2 magic 2>/dev/null < "$dir/python3" || true
+    [[ "$magic" == '#!' ]] && continue
+    printf '%s' "$dir/python3"
+    return
+  done
+}
+_py_real="$(_find_real_python3)"
 mkdir -p "$_fake_find_dir"
 if [[ -z "$_py_real" ]]; then
-  _fail "python3 not found: cannot run the fd-250 binary-probe test"
+  _fail "real python3 binary not found: cannot run the fd-250 binary-probe test"
 else
   # "real find" = the python3 binary. The resolver accepts it (not a #! script);
   # find_wrapper execs it with our pass-through args: `python3 -c <probe>`.
@@ -2458,7 +2472,7 @@ _section "BUG: git clean locale — sed fails on non-English git output"
   cd "$GIT_REPO"
   echo "locale-test-file.txt" > locale-test-file.txt
   _rgit add locale-test-file.txt 2>/dev/null
-  _rgit commit -q -m "Add locale test file"
+  _rgit commit -q -m "Add locale test file" -- locale-test-file.txt
   _rgit rm -q locale-test-file.txt
   _rgit reset HEAD -- locale-test-file.txt 2>/dev/null
   _rgit checkout -- locale-test-file.txt 2>/dev/null
@@ -2580,7 +2594,7 @@ else
 fi
 
 _section "git_wrapper: git clean -fdx snapshots ignored files"
-(cd "$GIT_REPO" && echo "*.ignored" > .gitignore && _rgit add -f .gitignore && _rgit commit -q -m "Add gitignore") 2>/dev/null || true
+(cd "$GIT_REPO" && echo "*.ignored" > .gitignore && _rgit add -f .gitignore && _rgit commit -q -m "Add gitignore" -- .gitignore) 2>/dev/null || true
 (cd "$GIT_REPO" && echo "should-be-cleaned" > test.ignored)
 before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
 (cd "$GIT_REPO" && _git clean -fdx 2>/dev/null)

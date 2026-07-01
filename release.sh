@@ -40,7 +40,7 @@ if ! grep -qF "ai-trash ${BARE}" ai-trash; then
 fi
 
 git add ai-trash
-git commit -m "Bump version to ${TAG}"
+git commit -m "Bump version to ${TAG}" -- ai-trash
 git tag "${TAG}"
 
 echo ""
