@@ -100,21 +100,27 @@ if [[ "$has_delete" == false ]]; then
   exec "$REAL_FIND" "$@"
 fi
 
-# ─── Replace -delete with -exec rm {} + ───────────────────────────────
+# ─── Replace -delete with -depth -exec rm -d {} ; ─────────────────────
 # This routes deletions through the rm wrapper, which provides ai-trash
-# protection. The rm in PATH is our rm_wrapper.sh.
+# protection. Real find -delete implies depth-first traversal and can remove
+# directories after their children, so the rewrite must preserve both pieces.
 new_args=()
+inserted_depth=false
 for arg in "$@"; do
   if [[ "$arg" == "-delete" ]]; then
+    if [[ "$inserted_depth" == false ]]; then
+      new_args+=("-depth")
+      inserted_depth=true
+    fi
     # Find the rm wrapper in the same directory as us
     _frm="${BASH_SOURCE[0]}"
     while [[ -L "$_frm" ]]; do _frm=$(readlink "$_frm"); done
     local_rm="$(cd "$(dirname "$_frm")" && pwd)/rm"
     if [[ -x "$local_rm" ]]; then
-      new_args+=("-exec" "$local_rm" "{}" "+")
+      new_args+=("-exec" "$local_rm" "-d" "{}" ";")
     else
       # Fallback: use rm from PATH (should be our wrapper)
-      new_args+=("-exec" "rm" "{}" "+")
+      new_args+=("-exec" "rm" "-d" "{}" ";")
     fi
   else
     new_args+=("$arg")

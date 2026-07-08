@@ -2115,6 +2115,32 @@ else
 fi
 /bin/rm -rf "$find_dir3"
 
+_section "find_wrapper: -delete removes empty directories"
+find_dir_empty="$WORK_DIR/find-empty-dir"
+mkdir -p "$find_dir_empty/root/empty" "$find_dir_empty/root/nonempty"
+echo "keep" > "$find_dir_empty/root/nonempty/file.txt"
+empty_out=$(_find "$find_dir_empty/root" -type d -empty -delete 2>&1; echo "EXIT:$?")
+empty_exit=$(echo "$empty_out" | grep "EXIT:" | cut -d: -f2)
+if [[ "$empty_exit" == "0" ]] && [[ ! -d "$find_dir_empty/root/empty" ]] && [[ -d "$find_dir_empty/root/nonempty" ]]; then
+  _pass "find -delete empty dir: removed empty dir only"
+else
+  _fail "find -delete empty dir: exit=$empty_exit empty_exists=$(test -d "$find_dir_empty/root/empty" && echo yes || echo no) nonempty_exists=$(test -d "$find_dir_empty/root/nonempty" && echo yes || echo no) out=$empty_out"
+fi
+/bin/rm -rf "$find_dir_empty"
+
+_section "find_wrapper: -delete removes nested tree depth-first"
+find_tree="$WORK_DIR/find-tree-delete"
+mkdir -p "$find_tree/root/child/grandchild"
+echo "leaf" > "$find_tree/root/child/grandchild/file.txt"
+tree_out=$(_find "$find_tree/root" -delete 2>&1; echo "EXIT:$?")
+tree_exit=$(echo "$tree_out" | grep "EXIT:" | cut -d: -f2)
+if [[ "$tree_exit" == "0" ]] && [[ ! -e "$find_tree/root" ]]; then
+  _pass "find -delete tree: removed nested tree"
+else
+  _fail "find -delete tree: exit=$tree_exit root_exists=$(test -e "$find_tree/root" && echo yes || echo no) out=$tree_out"
+fi
+/bin/rm -rf "$find_tree"
+
 _section "find_wrapper: non-AI context passes through instantly"
 find_dir4="$WORK_DIR/find-nonai"
 mkdir -p "$find_dir4"
