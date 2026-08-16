@@ -43,9 +43,28 @@ git add ai-trash
 git commit -m "Bump version to ${TAG}" -- ai-trash
 git tag "${TAG}"
 
-echo ""
-echo "Tagged ${TAG}. Push with:"
-echo "  git push && git push origin ${TAG}"
-echo ""
-echo "Then update Formula/ai-trash.rb sha256:"
-echo "  curl -sL https://github.com/forethought-studio/ai-trash/archive/refs/tags/${TAG}.tar.gz | shasum -a 256"
+cat <<EOF
+
+Tagged ${TAG}. A tag is NOT a release: the remaining steps are what make it
+visible on GitHub and installable via Homebrew. Run them in order.
+
+  1. Push the commit and the tag:
+       git push && git push origin ${TAG}
+
+  2. Wait for CI to go green on the tag. Do not publish a red tag:
+       gh run list --limit 4
+
+  3. Update Formula/ai-trash.rb (url + sha256), commit, and push:
+       curl -sL https://github.com/forethought-studio/ai-trash/archive/refs/tags/${TAG}.tar.gz | shasum -a 256
+       git commit -m "Update Formula to ${TAG}" -- Formula/ai-trash.rb && git push
+
+  4. Publish the GitHub Release. This is a separate object from the tag and is
+     the step most easily forgotten. It must be created by the repo owner
+     account, so switch first if another account is active:
+       gh auth switch --hostname github.com --user forethought-studio
+       gh release create ${TAG} --title "${TAG}" --notes "..."
+       gh auth switch --hostname github.com --user <your-usual-account>
+
+  5. Confirm all of the above actually landed:
+       ./scripts/check-release-published.sh ${TAG}
+EOF
