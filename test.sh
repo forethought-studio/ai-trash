@@ -3276,6 +3276,25 @@ fi
 
 _ai_trash empty --force >/dev/null 2>&1
 
+_section "bypass_trash_patterns: default build/android pattern"
+_set_mode selective
+# React Native/Android wrapper scripts can emit generated output under build/android.
+fake_android_build="$WORK_DIR/mobile-app/build/android"
+mkdir -p "$fake_android_build"
+echo "artifact" > "$fake_android_build/app-release.aab"
+before_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+_rm -rf "$fake_android_build"
+after_count=$(ls "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+if [[ ! -d "$fake_android_build" ]] && [[ "$after_count" -eq "$before_count" ]]; then
+  _pass "bypass: build/android output permanently deleted by default pattern"
+elif [[ ! -d "$fake_android_build" ]]; then
+  _fail "bypass: build/android output gone but ended up in trash"
+else
+  _fail "bypass: build/android output still exists"
+fi
+
+_ai_trash empty --force >/dev/null 2>&1
+
 _section "bypass_trash_patterns: default .framework pattern"
 _set_mode selective
 # Default config.default.sh has \.framework(/|$) pattern enabled
