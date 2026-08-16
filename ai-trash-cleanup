@@ -5,6 +5,13 @@
 
 PLATFORM=$(uname -s)
 
+# Shared library, for the sidecar-metadata helpers (_meta_path,
+# _remove_trash_item). Sourced BEFORE this script's own defaults and config
+# load below, so those still have the final say on RETENTION_DAYS et al.
+_AI_TRASH_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ai-trash-lib.sh"
+# shellcheck source=ai-trash-lib.sh
+[[ -f "$_AI_TRASH_LIB" ]] && source "$_AI_TRASH_LIB"
+
 # Load user config to pick up RETENTION_DAYS, MAX_TRASH_SIZE_GB, etc.
 # shellcheck source=/dev/null
 CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/ai-trash/config.sh"
@@ -25,13 +32,35 @@ _mtime_arg=$(( RETENTION_DAYS > 0 ? RETENTION_DAYS - 1 : 0 ))
 if [[ "$PLATFORM" == "Darwin" ]]; then
   # Purge xattr-tagged items in ~/.Trash/ older than RETENTION_DAYS days
   while IFS= read -r -d '' item; do
-    xattr -p com.ai-trash.original-path "$item" >/dev/null 2>&1 && /bin/rm -rf "$item"
+    xattr -p com.ai-trash.original-path "$item" >/dev/null 2>&1 && _remove_trash_item "$item"
   done < <(find "$HOME/.Trash" -maxdepth 1 -mindepth 1 -mtime +"$_mtime_arg" -print0 2>/dev/null)
 else
-  # Linux: purge items in ~/.local/share/Trash/ai-trash/ older than RETENTION_DAYS days
+  # Linux: purge items in ~/.local/share/Trash/ai-trash/ older than RETENTION_DAYS days.
+  # Sidecars are excluded from the scan and removed with their item instead:
+  # their mtime is the time metadata was written, not the item's age, so an
+  # -mtime scan that matched them directly would purge the two out of step.
   AI_TRASH="$HOME/.local/share/Trash/ai-trash"
-  [[ -d "$AI_TRASH" ]] && \
-    find "$AI_TRASH" -maxdepth 1 -mindepth 1 -mtime +"$_mtime_arg" -exec /bin/rm -rf {} \;
+  if [[ -d "$AI_TRASH" ]]; then
+    while IFS= read -r -d '' item; do
+      _remove_trash_item "$item"
+    done < <(find "$AI_TRASH" -maxdepth 1 -mindepth 1 \
+               ! -name '.*.ai-trash' -mtime +"$_mtime_arg" -print0 2>/dev/null)
+
+    # Sweep orphaned sidecars: metadata whose item is no longer in the trash.
+    # Self-healing, and required for correctness on upgrade. Versions before
+    # this one removed items without their sidecars, and also enumerated
+    # sidecars as items, so a full `empty` cleared the orphans incidentally.
+    # Now that sidecars are correctly excluded from enumeration, nothing else
+    # would ever reach an already-orphaned one and it would persist forever.
+    while IFS= read -r -d '' meta; do
+      _orphan_base="${meta##*/}"
+      _orphan_base="${_orphan_base#.}"
+      _orphan_base="${_orphan_base%.ai-trash}"
+      # -L as well as -e: a trashed broken symlink is still a live item.
+      [[ -e "$AI_TRASH/$_orphan_base" || -L "$AI_TRASH/$_orphan_base" ]] \
+        || /bin/rm -f "$meta"
+    done < <(find "$AI_TRASH" -maxdepth 1 -mindepth 1 -name '.*.ai-trash' -print0 2>/dev/null)
+  fi
 fi
 
 # ─── Size-cap enforcement ──────────────────────────────────────────────
@@ -91,7 +120,7 @@ while IFS= read -r -d '' item; do
   size_kb=$(du -sk "$item" 2>/dev/null | awk '{print $1}')
   [[ -z "$size_kb" ]] && continue
   printf '%s\t%s\t%s\n' "$mtime" "$size_kb" "$item" >> "$inventory"
-done < <(find "$scan_dir" -maxdepth 1 -mindepth 1 -print0 2>/dev/null)
+done < <(find "$scan_dir" -maxdepth 1 -mindepth 1 ! -name '.*.ai-trash' -print0 2>/dev/null)
 
 # Total current size of ai-trash items.
 total_kb=$(awk -F'\t' '{s+=$2} END {print s+0}' "$inventory")
@@ -110,6 +139,6 @@ grace_threshold=$(( $(date +%s) - SIZE_EVICTION_GRACE_HOURS * 3600 ))
 sort -n "$inventory" | while IFS=$'\t' read -r mtime size_kb path; do
   (( total_kb <= cap_kb )) && break
   (( mtime > grace_threshold )) && break
-  /bin/rm -rf "$path"
+  _remove_trash_item "$path"
   total_kb=$(( total_kb - size_kb ))
 done

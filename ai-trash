@@ -15,6 +15,15 @@ else
 fi
 PROG=$(basename "$0")
 
+# Shared library: sidecar-metadata helpers (_meta_path, _is_meta_path,
+# _remove_trash_item) and, for `suggest`, _matches_bypass_pattern and
+# BYPASS_TRASH_PATTERNS. Sourced once here rather than per-command so that
+# every removal path has _remove_trash_item available; the library guards
+# against double-sourcing.
+_AI_TRASH_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=ai-trash-lib.sh
+source "$_AI_TRASH_LIB_DIR/ai-trash-lib.sh"
+
 # ─── Helpers ───────────────────────────────────────────────────────────
 
 _usage() {
@@ -65,8 +74,12 @@ _each_ai_trash_item() {
     done < <(find "$TRASH_DIR" -maxdepth 1 -mindepth 1 \
                ${mtime_arg:+-mtime +"$mtime_arg"} -print0 2>/dev/null)
   else
-    # Linux: all items in ~/.local/share/Trash/ai-trash/ are ours
+    # Linux: all items in ~/.local/share/Trash/ai-trash/ are ours, EXCEPT the
+    # ".<name>.ai-trash" sidecars, which are metadata about an item rather than
+    # trashed content. Yielding them would list them as bogus zero-metadata
+    # entries and make them independently purgeable from the item they describe.
     [[ -d "$TRASH_DIR" ]] && find "$TRASH_DIR" -maxdepth 1 -mindepth 1 \
+      ! -name '.*.ai-trash' \
       ${mtime_arg:+-mtime +"$mtime_arg"} -print0 2>/dev/null
   fi
 }
@@ -172,6 +185,9 @@ cmd_restore() {
 
   mkdir -p "$(dirname "$orig_path")"
   if mv "$item" "$orig_path"; then
+    # The item has left the trash, so its metadata no longer describes
+    # anything. Left behind it would linger in the trash directory forever.
+    [[ "$PLATFORM" == "Darwin" ]] || /bin/rm -f "$(_meta_path "$item")" 2>/dev/null || true
     echo "restored → $orig_path"
   else
     echo "$PROG: failed to restore '$(basename "$item")'" >&2
@@ -225,7 +241,7 @@ cmd_empty() {
   fi
 
   for item in "${items[@]}"; do
-    /bin/rm -rf "$item"
+    _remove_trash_item "$item"
   done
   echo "deleted $count item(s)."
 }
@@ -272,12 +288,8 @@ cmd_status() {
 # ─── suggest ──────────────────────────────────────────────────────────
 
 cmd_suggest() {
-  # Load ai-trash-lib.sh for _matches_bypass_pattern and BYPASS_TRASH_PATTERNS
-  local lib_dir
-  lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  # shellcheck source=ai-trash-lib.sh
-  source "$lib_dir/ai-trash-lib.sh"
-
+  # _matches_bypass_pattern and BYPASS_TRASH_PATTERNS come from
+  # ai-trash-lib.sh, sourced at the top of this script.
   local _has_item=false
   while IFS= read -r -d '' _; do _has_item=true; break; done < <(_each_ai_trash_item)
   if [[ "$_has_item" != true ]]; then

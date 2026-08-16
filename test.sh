@@ -96,6 +96,32 @@ else
   _TIMEOUT=_timeout_fallback
 fi
 
+# ─── Trash inspection helpers ──────────────────────────────────────────
+# Never list a trash directory with a bare `ls` in an assertion. Two entries
+# are easy to get wrong in opposite directions, and each one silently inverts
+# a test rather than failing it:
+#   * dot-named items (.claude-bash-pre-*.snapshot, .DS_Store, .aider.*) are
+#     hidden by plain `ls`, so a before/after count comparison compares two
+#     equal numbers and passes whether the file was bypassed or trashed;
+#   * Linux ".<name>.ai-trash" sidecars are metadata, not trashed items, so
+#     `ls -A` counts two entries per item and breaks exact-count arithmetic.
+# _trash_names lists real items only, on both platforms. Use it everywhere.
+_trash_names() {
+  ls -A "${1:-$TEST_TRASH}" 2>/dev/null | { grep -v '\.ai-trash$' || true; }
+}
+_trash_count() {
+  _trash_names "${1:-$TEST_TRASH}" | { grep -c . || true; } | tr -d ' '
+}
+
+# System-trash entries, excluding the nested ai-trash directory (which lives
+# inside the system trash on Linux) and any sidecar metadata files.
+_system_trash_count() {
+  ls -A "$TEST_SYSTEM_TRASH/" 2>/dev/null \
+    | { grep -v '^ai-trash$' || true; } \
+    | { grep -v '\.ai-trash$' || true; } \
+    | { grep -c . || true; } | tr -d ' '
+}
+
 # ─── Config helpers ────────────────────────────────────────────────────
 _set_mode() {
   cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
@@ -125,11 +151,11 @@ _set_mode selective
 f="$WORK_DIR/always-test.txt"
 echo "hello" > "$f"
 _rm "$f"
-trashed=$(ls -A "$TEST_TRASH/" 2>/dev/null | grep "always-test.txt" || true)
+trashed=$(_trash_names | grep "always-test.txt" || true)
 if [[ -n "$trashed" ]]; then
   _pass "always: file moved to ai-trash"
 else
-  _fail "always: file not found in ai-trash ($TEST_TRASH). Contents: $(ls -A $TEST_TRASH/ 2>/dev/null || echo 'empty')"
+  _fail "always: file not found in ai-trash ($TEST_TRASH). Contents: $(_trash_names || echo 'empty')"
 fi
 
 _section "rm_wrapper: always mode — metadata written"
@@ -191,7 +217,7 @@ _section "ai-trash CLI: restore"
 f2="$WORK_DIR/restore-me.txt"
 echo "restore-content" > "$f2"
 _rm "$f2"
-if ls -A "$TEST_TRASH/" 2>/dev/null | grep -q "restore-me.txt"; then
+if _trash_names | grep -q "restore-me.txt"; then
   out=$(_ai_trash restore restore-me.txt)
   if [[ -f "$f2" ]]; then
     _pass "restore: file restored to original path"
@@ -209,19 +235,19 @@ d="$WORK_DIR/testdir"
 mkdir -p "$d/subdir"
 echo "x" > "$d/file.txt"
 _rm -rf "$d"
-if ls -A "$TEST_TRASH/" 2>/dev/null | grep -q "testdir"; then
+if _trash_names | grep -q "testdir"; then
   _pass "always: directory moved to ai-trash"
 else
-  _fail "always: directory not found in ai-trash. Contents: $(ls -A $TEST_TRASH/ 2>/dev/null || echo 'empty')"
+  _fail "always: directory not found in ai-trash. Contents: $(_trash_names || echo 'empty')"
 fi
 
 _section "rm_wrapper: .log file goes to ai-trash (not permanently deleted)"
 # Disposable patterns were removed — all files go to trash regardless of extension.
 f_log="$WORK_DIR/debug.log"
 echo "log content" > "$f_log"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor bash "$REPO_DIR/rm_wrapper.sh" "$f_log" 2>/dev/null
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]] && [[ ! -f "$f_log" ]]; then
   _pass ".log file moved to ai-trash (not permanently deleted)"
 else
@@ -232,11 +258,11 @@ _section "rm_wrapper: selective mode — non-AI rm passes through to /bin/rm"
 _set_mode selective
 f_sel="$WORK_DIR/selective-test.txt"
 echo "bye" > "$f_sel"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 # Run in a clean env without any AI-identifying vars or process ancestry
 env -i HOME="$TEST_HOME" PATH=/bin:/usr/bin:/usr/local/bin \
   bash "$REPO_DIR/rm_wrapper.sh" "$f_sel" </dev/null 2>/dev/null || true
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ ! -f "$f_sel" ]] && [[ "$after_count" -eq "$before_count" ]]; then
   _pass "selective: non-AI rm bypassed ai-trash (file gone, trash count unchanged)"
 elif [[ ! -f "$f_sel" ]] && [[ "$after_count" -gt "$before_count" ]]; then
@@ -249,14 +275,14 @@ _section "rm_wrapper: safe mode — non-AI rm goes to system trash"
 _set_mode safe
 f_safe="$WORK_DIR/safe-test.txt"
 echo "safe" > "$f_safe"
-before_sys=$(ls -A "$TEST_SYSTEM_TRASH/" 2>/dev/null | { grep -cv "^ai-trash$" || true; } | tr -d ' ')
+before_sys=$(_system_trash_count)
 env -i HOME="$TEST_HOME" PATH=/bin:/usr/bin:/usr/local/bin \
   bash "$REPO_DIR/rm_wrapper.sh" "$f_safe" </dev/null 2>/dev/null || true
-after_sys=$(ls -A "$TEST_SYSTEM_TRASH/" 2>/dev/null | { grep -cv "^ai-trash$" || true; } | tr -d ' ')
+after_sys=$(_system_trash_count)
 if [[ ! -f "$f_safe" ]] && [[ "$after_sys" -gt "$before_sys" ]]; then
   _pass "safe: non-AI rm moved file to system trash (~/.Trash)"
 elif [[ ! -f "$f_safe" ]] && [[ "$after_sys" -eq "$before_sys" ]]; then
-  ai_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+  ai_count=$(_trash_count)
   _skip "safe: file gone but not in system trash — AI parent detected (ai-trash count=$ai_count) — expected from Claude Code"
 else
   _fail "safe: file still exists after rm"
@@ -270,7 +296,7 @@ _rm "$f_a"
 # Place another file with the same base name to force a collision
 echo "second" > "$f_a"
 _rm "$f_a"
-hits=$(ls -A "$TEST_TRASH/" 2>/dev/null | grep "collision" || true)
+hits=$(_trash_names | grep "collision" || true)
 count=$(echo "$hits" | grep -c "collision" || true)
 if [[ "$count" -ge 2 ]]; then
   renamed=$(echo "$hits" | grep -v "^collision\.txt$" || true)
@@ -305,9 +331,9 @@ exit_val=$(echo "$out" | grep "EXIT:" | cut -d: -f2)
 _section "ai-trash CLI: empty --older-than (recent items not deleted)"
 _set_mode selective
 # Items just added should not be deleted with --older-than 1
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 _ai_trash empty --force --older-than 1 >/dev/null 2>&1
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 [[ "$before_count" -eq "$after_count" ]] && _pass "empty --older-than 1: recent items untouched" \
   || _fail "empty --older-than 1: item count changed ($before_count → $after_count)"
 
@@ -336,10 +362,10 @@ _set_mode selective
 f_spaces="$WORK_DIR/file with spaces.txt"
 echo "spaced" > "$f_spaces"
 _rm "$f_spaces"
-if ls -A "$TEST_TRASH/" 2>/dev/null | grep -q "file with spaces.txt"; then
+if _trash_names | grep -q "file with spaces.txt"; then
   _pass "spaces: file with spaces moved to ai-trash"
 else
-  _fail "spaces: file with spaces not in ai-trash. Contents: $(ls -A "$TEST_TRASH/" 2>/dev/null || echo 'empty')"
+  _fail "spaces: file with spaces not in ai-trash. Contents: $(_trash_names || echo 'empty')"
 fi
 
 _section "rm_wrapper: path guard — refuses /, ., .."
@@ -353,7 +379,7 @@ _section "rm_wrapper: -- double-dash operand separator"
 f_dd="$WORK_DIR/double-dash-test.txt"
 echo "dd" > "$f_dd"
 _rm -- "$f_dd"
-if ls -A "$TEST_TRASH/" 2>/dev/null | grep -q "double-dash-test.txt"; then
+if _trash_names | grep -q "double-dash-test.txt"; then
   _pass "double-dash: file after -- moved to ai-trash"
 else
   _fail "double-dash: file not in ai-trash"
@@ -415,7 +441,7 @@ f_sym_link="$WORK_DIR/sym-link.txt"
 echo "target-content" > "$f_sym_target"
 ln -sf "$f_sym_target" "$f_sym_link"
 _rm "$f_sym_link"
-if ls -A "$TEST_TRASH/" 2>/dev/null | grep -q "sym-link.txt"; then
+if _trash_names | grep -q "sym-link.txt"; then
   _pass "symlink: symlink moved to ai-trash"
 else
   _fail "symlink: symlink not in ai-trash"
@@ -527,7 +553,7 @@ _section "ai-trash-cleanup: purges items older than 30 days"
 f_cleanup_old="$WORK_DIR/cleanup-old.txt"
 echo "old" > "$f_cleanup_old"
 _rm "$f_cleanup_old"
-_cleanup_old_item=$(ls -A "$TEST_TRASH/" 2>/dev/null | grep "^cleanup-old.txt" | head -1 || true)
+_cleanup_old_item=$(_trash_names | grep "^cleanup-old.txt" | head -1 || true)
 if [[ -n "$_cleanup_old_item" ]]; then
   if [[ "$(uname -s)" == "Darwin" ]]; then
     touch -t "$(date -v-31d +%Y%m%d%H%M)" "$TEST_TRASH/$_cleanup_old_item"
@@ -535,7 +561,7 @@ if [[ -n "$_cleanup_old_item" ]]; then
     touch -t "$(date -d '31 days ago' +%Y%m%d%H%M)" "$TEST_TRASH/$_cleanup_old_item"
   fi
   HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/ai-trash-cleanup"
-  if ! ls -A "$TEST_TRASH/" 2>/dev/null | grep -q "^cleanup-old.txt"; then
+  if ! _trash_names | grep -q "^cleanup-old.txt"; then
     _pass "ai-trash-cleanup: 31-day-old item purged"
   else
     _fail "ai-trash-cleanup: old item still present after cleanup"
@@ -549,7 +575,7 @@ f_cleanup_new="$WORK_DIR/cleanup-new.txt"
 echo "new" > "$f_cleanup_new"
 _rm "$f_cleanup_new"
 HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/ai-trash-cleanup"
-if ls -A "$TEST_TRASH/" 2>/dev/null | grep -q "cleanup-new.txt"; then
+if _trash_names | grep -q "cleanup-new.txt"; then
   _pass "ai-trash-cleanup: recent item preserved"
 else
   _fail "ai-trash-cleanup: recent item unexpectedly purged"
@@ -563,7 +589,7 @@ echo "RETENTION_DAYS=7" >> "$TEST_CONF_DIR/config.sh"
 f_cleanup_custom="$WORK_DIR/cleanup-custom.txt"
 echo "custom" > "$f_cleanup_custom"
 _rm "$f_cleanup_custom"
-_cleanup_custom_item=$(ls -A "$TEST_TRASH/" 2>/dev/null | grep "^cleanup-custom.txt" | head -1 || true)
+_cleanup_custom_item=$(_trash_names | grep "^cleanup-custom.txt" | head -1 || true)
 if [[ -n "$_cleanup_custom_item" ]]; then
   if [[ "$(uname -s)" == "Darwin" ]]; then
     touch -t "$(date -v-8d +%Y%m%d%H%M)" "$TEST_TRASH/$_cleanup_custom_item"
@@ -571,7 +597,7 @@ if [[ -n "$_cleanup_custom_item" ]]; then
     touch -t "$(date -d '8 days ago' +%Y%m%d%H%M)" "$TEST_TRASH/$_cleanup_custom_item"
   fi
   HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/ai-trash-cleanup"
-  if ! ls -A "$TEST_TRASH/" 2>/dev/null | grep -q "^cleanup-custom.txt"; then
+  if ! _trash_names | grep -q "^cleanup-custom.txt"; then
     _pass "ai-trash-cleanup: 8-day-old item purged with RETENTION_DAYS=7"
   else
     _fail "ai-trash-cleanup: 8-day-old item not purged despite RETENTION_DAYS=7"
@@ -593,7 +619,7 @@ _make_and_trash() {
   src="$WORK_DIR/$name"
   dd if=/dev/zero of="$src" bs=1024 count="$kb" status=none 2>/dev/null
   _rm "$src"
-  ls -A "$TEST_TRASH/" 2>/dev/null | grep "^$name" | head -1
+  _trash_names | grep "^$name" | head -1
 }
 
 _section "ai-trash-cleanup: size cap evicts oldest first"
@@ -877,7 +903,7 @@ echo "first" > "$f_dot1"
 _rm "$f_dot1"
 echo "second" > "$f_dot1"
 _rm "$f_dot1"
-dot_hits=$(ls -A "$TEST_TRASH/" 2>/dev/null | grep "\.bashrc" || true)
+dot_hits=$(_trash_names | grep "\.bashrc" || true)
 dot_count=$(echo "$dot_hits" | grep -c "\.bashrc" || true)
 if [[ "$dot_count" -ge 2 ]]; then
   _pass "dot-file collision: both copies in trash ($dot_count)"
@@ -890,10 +916,10 @@ _set_mode selective
 f_uni="$WORK_DIR/café-résumé.txt"
 echo "unicode" > "$f_uni"
 _rm "$f_uni"
-if ls -A "$TEST_TRASH/" 2>/dev/null | grep -q "café-résumé.txt"; then
+if _trash_names | grep -q "café-résumé.txt"; then
   _pass "unicode: file with unicode chars moved to ai-trash"
 else
-  _fail "unicode: file with unicode chars not in ai-trash. Contents: $(ls -A "$TEST_TRASH/" 2>/dev/null || echo 'empty')"
+  _fail "unicode: file with unicode chars not in ai-trash. Contents: $(_trash_names || echo 'empty')"
 fi
 
 _section "rm_wrapper: file with special chars (brackets, ampersand)"
@@ -901,7 +927,7 @@ _set_mode selective
 f_special="$WORK_DIR/test [1] & (2).txt"
 echo "special" > "$f_special"
 _rm "$f_special"
-if ls -A "$TEST_TRASH/" 2>/dev/null | grep -q 'test \[1\] & (2).txt'; then
+if _trash_names | grep -q 'test \[1\] & (2).txt'; then
   _pass "special chars: file with brackets/ampersand moved to trash"
 else
   _pass "special chars: file deleted (may have been renamed in trash)"
@@ -918,7 +944,7 @@ if [[ ! -d "$WORK_DIR/deep1" ]]; then
 else
   _fail "-rf deep: directory still exists"
 fi
-if ls -A "$TEST_TRASH/" 2>/dev/null | grep -q "deep1"; then
+if _trash_names | grep -q "deep1"; then
   _pass "-rf deep: directory in trash"
 else
   _fail "-rf deep: directory not in trash"
@@ -1179,10 +1205,10 @@ _section "rm_wrapper: safe mode with AI env var — routes to ai-trash (not syst
 _set_mode safe
 f_safe_ai="$WORK_DIR/safe-ai-verify.txt"
 echo "safe-ai" > "$f_safe_ai"
-before_ai=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_ai=$(_trash_count)
 HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
   bash "$REPO_DIR/rm_wrapper.sh" "$f_safe_ai" 2>/dev/null
-after_ai=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_ai=$(_trash_count)
 if [[ ! -f "$f_safe_ai" ]] && [[ "$after_ai" -gt "$before_ai" ]]; then
   _pass "safe AI: AI caller in safe mode goes to ai-trash"
 else
@@ -1194,9 +1220,9 @@ _section "ai-trash-cleanup: preserves items newer than threshold"
 f_cleanup_preserved="$WORK_DIR/cleanup-preserved.txt"
 echo "preserved" > "$f_cleanup_preserved"
 _rm "$f_cleanup_preserved"
-before_cleanup_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_cleanup_count=$(_trash_count)
 HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/ai-trash-cleanup"
-after_cleanup_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_cleanup_count=$(_trash_count)
 if [[ "$before_cleanup_count" -eq "$after_cleanup_count" ]]; then
   _pass "cleanup preserve: recent items untouched"
 else
@@ -1217,7 +1243,7 @@ _section "unlink_wrapper: file goes to ai-trash"
 f_unlink="$WORK_DIR/unlink-test.txt"
 echo "unlink me" > "$f_unlink"
 _unlink "$f_unlink"
-if [[ ! -f "$f_unlink" ]] && ls -A "$TEST_TRASH/" 2>/dev/null | grep -q "unlink-test.txt"; then
+if [[ ! -f "$f_unlink" ]] && _trash_names | grep -q "unlink-test.txt"; then
   _pass "unlink: file moved to ai-trash"
 else
   _fail "unlink: file not in ai-trash. exists=$(test -f "$f_unlink" && echo yes || echo no)"
@@ -1390,9 +1416,9 @@ fi
 
 _section "git_wrapper: git clean -fd snapshots untracked files"
 (cd "$GIT_REPO" && echo "untracked content" > untracked-file.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git clean -fd 2>/dev/null)
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
   _pass "git clean -fd: file snapshotted to trash"
 else
@@ -1407,9 +1433,9 @@ fi
 
 _section "git_wrapper: git checkout -- . snapshots modified files"
 (cd "$GIT_REPO" && echo "modified" > file.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git checkout -- . 2>/dev/null)
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
   _pass "git checkout -- .: modified file snapshotted"
 else
@@ -1425,9 +1451,9 @@ fi
 
 _section "git_wrapper: git restore . snapshots modified files"
 (cd "$GIT_REPO" && echo "modified again" > file.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git restore . 2>/dev/null)
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
   _pass "git restore .: modified file snapshotted"
 else
@@ -1436,16 +1462,16 @@ fi
 
 _section "git_wrapper: git reset --hard saves patch and snapshots files"
 (cd "$GIT_REPO" && echo "uncommitted change" > file.txt && _rgit add file.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git reset --hard HEAD 2>/dev/null)
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
   _pass "git reset --hard: changes snapshotted"
 else
   _fail "git reset --hard: no snapshot (before=$before_count after=$after_count)"
 fi
 # Check for patch file
-patch_file=$(ls -A "$TEST_TRASH/" 2>/dev/null | grep "git-reset-hard" || true)
+patch_file=$(_trash_names | grep "git-reset-hard" || true)
 if [[ -n "$patch_file" ]]; then
   _pass "git reset --hard: patch file saved ($patch_file)"
 else
@@ -1454,9 +1480,9 @@ fi
 
 _section "git_wrapper: git stash drop saves patch"
 (cd "$GIT_REPO" && echo "stash me" > file.txt && _rgit stash -q 2>/dev/null)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git stash drop 2>/dev/null)
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
   _pass "git stash drop: patch saved to trash"
 else
@@ -1467,9 +1493,9 @@ _section "git_wrapper: git stash clear saves all patches"
 # Create two stashes
 (cd "$GIT_REPO" && echo "stash1" > file.txt && _rgit stash -q 2>/dev/null)
 (cd "$GIT_REPO" && echo "stash2" > file.txt && _rgit stash -q 2>/dev/null)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git stash clear 2>/dev/null)
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
   _pass "git stash clear: patches saved to trash"
 else
@@ -1478,11 +1504,11 @@ fi
 
 _section "git_wrapper: git branch -D saves branch tip SHA"
 (cd "$GIT_REPO" && _rgit checkout -qb test-branch && _rgit checkout -q master 2>/dev/null || _rgit checkout -q main 2>/dev/null)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git branch -D test-branch 2>/dev/null)
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
-  sha_file=$(ls -A "$TEST_TRASH/" 2>/dev/null | grep "git-branch-D" || true)
+  sha_file=$(_trash_names | grep "git-branch-D" || true)
   _pass "git branch -D: branch tip saved ($sha_file)"
 else
   _fail "git branch -D: no recovery info (before=$before_count after=$after_count)"
@@ -1508,9 +1534,9 @@ fi
 
 _section "git_wrapper: git restore --staged is not intercepted"
 (cd "$GIT_REPO" && echo "staged only" > file.txt && _rgit add file.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git restore --staged file.txt 2>/dev/null)
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 # --staged only unstages, doesn't destroy working tree changes — should NOT snapshot
 if [[ "$after_count" -eq "$before_count" ]]; then
   _pass "git restore --staged: no snapshot (non-destructive)"
@@ -1524,10 +1550,10 @@ fi
 
 _section "git_wrapper: git clean without -f does not snapshot"
 (cd "$GIT_REPO" && echo "untouched" > no-clean.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 # git clean without -f does nothing (git requires -f to actually clean)
 (cd "$GIT_REPO" && _git clean 2>/dev/null) || true
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -eq "$before_count" ]]; then
   _pass "git clean (no -f): no snapshot"
 else
@@ -1537,9 +1563,9 @@ fi
 
 _section "git_wrapper: git clean -n (dry-run) does not snapshot"
 (cd "$GIT_REPO" && echo "dry" > dry-run.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git clean -n 2>/dev/null) || true
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -eq "$before_count" ]]; then
   _pass "git clean -n: no snapshot (dry-run)"
 else
@@ -1549,9 +1575,9 @@ fi
 
 _section "git_wrapper: git reset --soft does not snapshot"
 (cd "$GIT_REPO" && echo "soft change" > file.txt && _rgit add file.txt && _rgit commit -q -m "Soft test" -- file.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git reset --soft HEAD~1 2>/dev/null) || true
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -eq "$before_count" ]]; then
   _pass "git reset --soft: no snapshot (non-destructive)"
 else
@@ -1562,9 +1588,9 @@ fi
 
 _section "git_wrapper: git reset (mixed, no --hard) does not snapshot"
 (cd "$GIT_REPO" && echo "mixed change" > file.txt && _rgit add file.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git reset HEAD 2>/dev/null) || true
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -eq "$before_count" ]]; then
   _pass "git reset (mixed): no snapshot (non-destructive)"
 else
@@ -1574,9 +1600,9 @@ fi
 
 _section "git_wrapper: git branch -d (safe delete) does not snapshot"
 (cd "$GIT_REPO" && _rgit checkout -qb safe-del-branch && _rgit checkout -q - 2>/dev/null)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git branch -d safe-del-branch 2>/dev/null) || true
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -eq "$before_count" ]]; then
   _pass "git branch -d: no snapshot (safe delete)"
 else
@@ -1585,9 +1611,9 @@ fi
 
 _section "git_wrapper: git checkout branch-name does not snapshot"
 (cd "$GIT_REPO" && _rgit checkout -qb checkout-test-branch && _rgit checkout -q - 2>/dev/null)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git checkout checkout-test-branch 2>/dev/null) || true
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -eq "$before_count" ]]; then
   _pass "git checkout branch: no snapshot (branch switch)"
 else
@@ -1597,9 +1623,9 @@ fi
 
 _section "git_wrapper: git push (no --force) does not snapshot"
 # Can't push to a real remote in tests, but verify no snapshot/metadata created
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git push origin main 2>/dev/null) || true
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -eq "$before_count" ]]; then
   _pass "git push (no force): no snapshot"
 else
@@ -1608,9 +1634,9 @@ fi
 
 _section "git_wrapper: git diff/log/status passthrough (no snapshot)"
 for cmd in "diff" "log --oneline -1" "status"; do
-  before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+  before_count=$(_trash_count)
   (cd "$GIT_REPO" && _git $cmd 2>/dev/null) || true
-  after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+  after_count=$(_trash_count)
   if [[ "$after_count" -eq "$before_count" ]]; then
     _pass "git $cmd: passthrough, no snapshot"
   else
@@ -1620,9 +1646,9 @@ done
 
 _section "git_wrapper: git stash push/pop are non-destructive"
 (cd "$GIT_REPO" && echo "stash-push-test" > file.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git stash push -q 2>/dev/null) || true
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -eq "$before_count" ]]; then
   _pass "git stash push: no snapshot (non-destructive)"
 else
@@ -1634,9 +1660,9 @@ fi
 
 _section "git_wrapper: git clean -fd snapshots multiple untracked files"
 (cd "$GIT_REPO" && echo "a" > untrack-a.txt && echo "b" > untrack-b.txt && echo "c" > untrack-c.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git clean -fd 2>/dev/null)
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 delta=$((after_count - before_count))
 if [[ "$delta" -ge 3 ]]; then
   _pass "git clean -fd multi: all 3 files snapshotted ($delta items)"
@@ -1648,9 +1674,9 @@ fi
 
 _section "git_wrapper: git clean -fd snapshots untracked directory"
 (cd "$GIT_REPO" && mkdir -p untrack-dir && echo "inside" > untrack-dir/inner.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git clean -fd 2>/dev/null)
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
   _pass "git clean -fd dir: directory snapshotted"
 else
@@ -1660,9 +1686,9 @@ fi
 _section "git_wrapper: git checkout -- specific file snapshots only that file"
 (cd "$GIT_REPO" && echo "mod1" > file.txt && echo "extra" > extra.txt && _rgit add extra.txt && _rgit commit -q -m "Add extra" -- extra.txt)
 (cd "$GIT_REPO" && echo "mod-file" > file.txt && echo "mod-extra" > extra.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git checkout -- file.txt 2>/dev/null)
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
   _pass "git checkout -- file: file snapshotted"
 else
@@ -1686,9 +1712,9 @@ main_branch=$(_rgit -C "$GIT_REPO" rev-parse --abbrev-ref HEAD)
   _rgit checkout -qb multi-del-2
   _rgit checkout -q "$main_branch" 2>/dev/null
 ) || true
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git branch -D multi-del-1 multi-del-2 2>/dev/null) || true
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 delta=$((after_count - before_count))
 if [[ "$delta" -ge 2 ]]; then
   _pass "git branch -D multi: recovery info saved for both branches ($delta files)"
@@ -1720,9 +1746,9 @@ fi
 _section "git_wrapper: git stash clear with no stashes does not create file"
 # Make sure stash is empty
 (cd "$GIT_REPO" && _rgit stash clear 2>/dev/null) || true
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git stash clear 2>/dev/null) || true
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -eq "$before_count" ]]; then
   _pass "git stash clear (empty): no file created"
 else
@@ -1730,9 +1756,9 @@ else
 fi
 
 _section "git_wrapper: git stash drop with invalid ref does not create file"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git stash drop stash@{999} 2>/dev/null) || true
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -eq "$before_count" ]]; then
   _pass "git stash drop (invalid): no file created"
 else
@@ -1747,10 +1773,10 @@ _section "git_wrapper: GIT_PROTECTION=false disables interception"
 _noprotect_conf="$WORK_DIR/noprotect-conf/ai-trash"
 mkdir -p "$_noprotect_conf"
 printf 'GIT_PROTECTION=false\nFIND_PROTECTION=false\n' > "$_noprotect_conf/config.sh"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 HOME="$TEST_HOME" XDG_CONFIG_HOME="$WORK_DIR/noprotect-conf" TERM_PROGRAM=cursor \
   bash "$GIT_LINK" -C "$GIT_REPO" clean -fd 2>/dev/null
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -eq "$before_count" ]]; then
   _pass "GIT_PROTECTION=false: no snapshot (passthrough)"
 else
@@ -1783,12 +1809,12 @@ _ai_trash empty --force >/dev/null 2>&1
 # Homebrew bypass tests (allow-em-dash: existing section-divider style).
 _section "git_wrapper: HOMEBREW_BREW_FILE bypasses AI detection / snapshot"
 (cd "$GIT_REPO" && echo "brew-bypass" > untrack-brew.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 # Run with TERM_PROGRAM=cursor (would normally trigger AI snapshot) AND
 # HOMEBREW_BREW_FILE set. The brew bypass must short-circuit before snapshot.
 HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor HOMEBREW_BREW_FILE=/usr/local/bin/brew \
   bash "$GIT_LINK" -C "$GIT_REPO" clean -fd 2>/dev/null
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -eq "$before_count" ]]; then
   _pass "HOMEBREW_BREW_FILE: no snapshot (bypass fired)"
 else
@@ -1804,11 +1830,11 @@ _section "git_wrapper: HOMEBREW_PREFIX alone (shell init) does NOT bypass"
 # HOMEBREW_PREFIX is set in every interactive shell on a brew host by
 # `brew shellenv`. Its presence must not disable AI-snapshot behavior.
 (cd "$GIT_REPO" && echo "shell-brew" > untrack-shell.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor HOMEBREW_PREFIX=/opt/homebrew \
   HOMEBREW_CELLAR=/opt/homebrew/Cellar HOMEBREW_REPOSITORY=/opt/homebrew \
   bash "$GIT_LINK" -C "$GIT_REPO" clean -fd 2>/dev/null
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
   _pass "HOMEBREW_PREFIX alone: snapshot still happens (no false bypass)"
 else
@@ -1829,10 +1855,10 @@ fi
 
 _section "git_wrapper: no brew env vars: AI detection still runs (snapshot)"
 (cd "$GIT_REPO" && echo "no-brew" > untrack-nobrew.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
   bash "$GIT_LINK" -C "$GIT_REPO" clean -fd 2>/dev/null
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
   _pass "no brew env: snapshot still happens for AI caller"
 else
@@ -2059,11 +2085,11 @@ find_dir="$WORK_DIR/find-test"
 mkdir -p "$find_dir"
 echo "find me" > "$find_dir/findable.txt"
 echo "find me too" > "$find_dir/findable2.txt"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 # The rm symlink needs to exist in WORK_DIR for find -exec to find it
 ln -sf "$REPO_DIR/rm_wrapper.sh" "$WORK_DIR/rm" 2>/dev/null || true
 _find "$find_dir" -name "*.txt" -delete 2>/dev/null
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
   _pass "find -delete: files routed to trash"
 else
@@ -2099,9 +2125,9 @@ find_dir3="$WORK_DIR/find-complex"
 mkdir -p "$find_dir3"
 echo "small" > "$find_dir3/small.txt"
 echo "also small" > "$find_dir3/also.log"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 _find "$find_dir3" -type f -name "*.txt" -delete 2>/dev/null
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]] && [[ ! -f "$find_dir3/small.txt" ]]; then
   _pass "find -delete complex: .txt deleted and trashed"
 else
@@ -2159,10 +2185,10 @@ _section "find_wrapper: FIND_PROTECTION=false disables interception"
 find_dir5="$WORK_DIR/find-noprotect"
 mkdir -p "$find_dir5"
 echo "noprotect" > "$find_dir5/noprotect.txt"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 HOME="$TEST_HOME" XDG_CONFIG_HOME="$WORK_DIR/noprotect-conf" TERM_PROGRAM=cursor \
   bash "$FIND_LINK" "$find_dir5" -name "*.txt" -delete 2>/dev/null
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -eq "$before_count" ]] && [[ ! -f "$find_dir5/noprotect.txt" ]]; then
   _pass "FIND_PROTECTION=false: file deleted directly (no trash)"
 else
@@ -2174,10 +2200,10 @@ _section "find_wrapper: -delete with -exec already present"
 find_dir6="$WORK_DIR/find-exec-delete"
 mkdir -p "$find_dir6"
 echo "combo" > "$find_dir6/combo.txt"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 # This tests that -exec and -delete can coexist — the -delete gets replaced, -exec stays
 out=$(_find "$find_dir6" -name "*.txt" -exec echo FOUND {} \; -delete 2>/dev/null)
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if echo "$out" | grep -q "FOUND"; then
   _pass "find -exec + -delete: -exec still works"
 else
@@ -2196,13 +2222,13 @@ find_brew_dir="$WORK_DIR/find-brew"
 mkdir -p "$find_brew_dir"
 echo "brew bypass" > "$find_brew_dir/victim.txt"
 ln -sf "$REPO_DIR/rm_wrapper.sh" "$WORK_DIR/rm"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 # TERM_PROGRAM=cursor would normally trigger -delete rewrite to rm wrapper.
 # With HOMEBREW_BREW_FILE set, the bypass must hand directly to real find,
 # which performs a real unlink (no trash).
 HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor HOMEBREW_BREW_FILE=/usr/local/bin/brew \
   PATH="$WORK_DIR:$PATH" bash "$FIND_LINK" "$find_brew_dir" -name "*.txt" -delete 2>/dev/null
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -eq "$before_count" && ! -f "$find_brew_dir/victim.txt" ]]; then
   _pass "HOMEBREW_BREW_FILE: bypass fired, real find did the delete"
 else
@@ -2226,11 +2252,11 @@ _section "find_wrapper: HOMEBREW_PREFIX alone (shell init) does NOT bypass"
 find_shell_dir="$WORK_DIR/find-shell"
 mkdir -p "$find_shell_dir"
 echo "shell brew" > "$find_shell_dir/victim.txt"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor HOMEBREW_PREFIX=/opt/homebrew \
   HOMEBREW_CELLAR=/opt/homebrew/Cellar HOMEBREW_REPOSITORY=/opt/homebrew \
   PATH="$WORK_DIR:$PATH" bash "$FIND_LINK" "$find_shell_dir" -name "*.txt" -delete 2>/dev/null
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
   _pass "find HOMEBREW_PREFIX alone: -delete still routed through wrapper"
 else
@@ -2261,9 +2287,9 @@ if command -v rsync >/dev/null 2>&1; then
   echo "new-content" > "$rsync_src/changed.txt"
   echo "old" > "$rsync_dest/changed.txt"
   echo "extra" > "$rsync_dest/sub/extra.txt"
-  before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+  before_count=$(_trash_count)
   _rsync -a --delete "$rsync_src/" "$rsync_dest/" 2>/dev/null
-  after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+  after_count=$(_trash_count)
   changed_backup=$(_find_trash_item_by_orig "$rsync_dest/changed.txt" || true)
   extra_backup=$(_find_trash_item_by_orig "$rsync_dest/sub/extra.txt" || true)
   if [[ "$after_count" -ge $((before_count + 2)) && -n "$changed_backup" && -n "$extra_backup" ]]; then
@@ -2292,9 +2318,9 @@ if command -v rsync >/dev/null 2>&1; then
   mkdir -p "$rsync_src2" "$rsync_dest2"
   echo "newer-content" > "$rsync_src2/file.txt"
   echo "old" > "$rsync_dest2/file.txt"
-  before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+  before_count=$(_trash_count)
   _rsync -a "$rsync_src2/" "$rsync_dest2/" 2>/dev/null
-  after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+  after_count=$(_trash_count)
   if [[ "$after_count" -eq "$before_count" && "$(cat "$rsync_dest2/file.txt")" == "newer-content" ]]; then
     _pass "rsync default: non-delete sync passed through"
   else
@@ -2311,10 +2337,10 @@ if command -v rsync >/dev/null 2>&1; then
   printf '\nRSYNC_PROTECT_ALL_LOCAL=true\n' >> "$rsync_conf3/ai-trash/config.sh"
   echo "newer-content" > "$rsync_src3/file.txt"
   echo "old" > "$rsync_dest3/file.txt"
-  before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+  before_count=$(_trash_count)
   HOME="$TEST_HOME" XDG_CONFIG_HOME="$rsync_conf3" TERM_PROGRAM=cursor \
     PATH="$WORK_DIR:$PATH" bash "$RSYNC_LINK" -a "$rsync_src3/" "$rsync_dest3/" 2>/dev/null
-  after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+  after_count=$(_trash_count)
   all_local_backup=$(_find_trash_item_by_orig "$rsync_dest3/file.txt" || true)
   if [[ "$after_count" -gt "$before_count" && -n "$all_local_backup" && "$(cat "$all_local_backup")" == "old" ]]; then
     _pass "rsync all-local: overwrite backed up"
@@ -2330,9 +2356,9 @@ if command -v rsync >/dev/null 2>&1; then
   mkdir -p "$rsync_src4" "$rsync_dest4"
   echo "newer-content" > "$rsync_src4/file.txt"
   echo "old" > "$rsync_dest4/file.txt"
-  before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+  before_count=$(_trash_count)
   _rsync -a --delete --backup --backup-dir="$rsync_user_backup" "$rsync_src4/" "$rsync_dest4/" 2>/dev/null
-  after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+  after_count=$(_trash_count)
   if [[ "$after_count" -eq "$before_count" && -f "$rsync_user_backup/file.txt" ]]; then
     _pass "rsync existing backup: user backup behavior preserved"
   else
@@ -2385,10 +2411,10 @@ RM_LINK="$WORK_DIR/rm_cmd"
 ln -sf "$REPO_DIR/rm_wrapper.sh" "$RM_LINK"
 rm_brew_file="$WORK_DIR/rm-brew-victim.txt"
 echo "brew rm" > "$rm_brew_file"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor HOMEBREW_BREW_FILE=/usr/local/bin/brew \
   bash "$RM_LINK" "$rm_brew_file" 2>/dev/null
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -eq "$before_count" && ! -f "$rm_brew_file" ]]; then
   _pass "rm HOMEBREW_BREW_FILE: bypass fired, file permanently removed"
 else
@@ -2479,7 +2505,7 @@ if [[ ! -f "$f_dash" ]]; then
 else
   _fail "rm -- -dash-file: file still exists"
 fi
-if ls -A "$TEST_TRASH/" 2>/dev/null | grep -q "\-dash-file.txt"; then
+if _trash_names | grep -q "\-dash-file.txt"; then
   _pass "rm -- -dash-file: file in trash"
 else
   _pass "rm -- -dash-file: file handled (may have different name in trash)"
@@ -2528,11 +2554,11 @@ exec "\$REAL_GIT" "\$@"
 FAKEGIT
 chmod +x "$fake_git_dir/git"
 
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 # Run git wrapper but with our fake git first in PATH (so _find_real_git picks it up)
 HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
   PATH="$fake_git_dir:$PATH" bash "$GIT_LINK" -C "$GIT_REPO" clean -fd 2>/dev/null
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
   _pass "git clean locale: file snapshotted despite non-English output"
 else
@@ -2564,14 +2590,14 @@ _section "BUG: snapshot_to_ai_trash cp -R fallback missing -p flag"
 snap_test_dir="$WORK_DIR/snap-test"
 mkdir -p "$snap_test_dir"
 echo "snapshot-content" > "$snap_test_dir/snap-file.txt"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 # Use git wrapper to trigger snapshot (modify a tracked file, then git checkout)
 (
   cd "$GIT_REPO"
   echo "snap-modified" > file.txt
 )
 (cd "$GIT_REPO" && _git checkout -- . 2>/dev/null)
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
   _pass "snapshot: file copied to trash successfully"
 else
@@ -2584,24 +2610,24 @@ fi
 _section "git_wrapper: git push --force-with-lease triggers snapshot"
 # Can't actually push, but verify that the force push detection fires
 # and tries to save remote refs (will fail gracefully since no remote exists)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git push --force-with-lease origin main 2>/dev/null) || true
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 # Since there's no remote, ls-remote fails and no file is created — that's OK
 # What matters is it doesn't crash
 _pass "git push --force-with-lease: handled without crash"
 
 _section "git_wrapper: git push -f (short flag) triggers snapshot"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git push -f origin main 2>/dev/null) || true
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 _pass "git push -f: handled without crash"
 
 _section "git_wrapper: git checkout . (no --) snapshots modified files"
 (cd "$GIT_REPO" && echo "dot-checkout" > file.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git checkout . 2>/dev/null)
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
   _pass "git checkout . (no --): modified file snapshotted"
 else
@@ -2610,9 +2636,9 @@ fi
 
 _section "git_wrapper: git restore --worktree --staged snapshots files"
 (cd "$GIT_REPO" && echo "worktree-staged" > file.txt && _rgit add file.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git restore --worktree --staged file.txt 2>/dev/null) || true
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
   _pass "git restore --worktree --staged: file snapshotted"
 else
@@ -2622,9 +2648,9 @@ fi
 _section "git_wrapper: git clean -fdx snapshots ignored files"
 (cd "$GIT_REPO" && echo "*.ignored" > .gitignore && _rgit add -f .gitignore && _rgit commit -q -m "Add gitignore" -- .gitignore) 2>/dev/null || true
 (cd "$GIT_REPO" && echo "should-be-cleaned" > test.ignored)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git clean -fdx 2>/dev/null)
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
   _pass "git clean -fdx: ignored file snapshotted"
 else
@@ -2637,12 +2663,12 @@ mkdir -p "$snap_sym_dir"
 echo "sym-target" > "$snap_sym_dir/target.txt"
 ln -sf "$snap_sym_dir/target.txt" "$snap_sym_dir/link.txt"
 # Source the library and call snapshot_to_ai_trash directly
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor bash -c '
   source "'"$REPO_DIR"'/ai-trash-lib.sh"
   snapshot_to_ai_trash "'"$snap_sym_dir/link.txt"'"
 ' 2>/dev/null
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
   _pass "snapshot symlink: symlink copied to trash"
 else
@@ -2657,12 +2683,12 @@ fi
 /bin/rm -rf "$snap_sym_dir"
 
 _section "save_to_ai_trash: saves text content with metadata"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor bash -c '
   source "'"$REPO_DIR"'/ai-trash-lib.sh"
   save_to_ai_trash "test-save-content.txt" "Hello from save_to_ai_trash" "(test) save label"
 ' 2>/dev/null
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
   saved_file="$TEST_TRASH/test-save-content.txt"
   if [[ -f "$saved_file" ]]; then
@@ -2688,10 +2714,10 @@ fi
 _section "git_wrapper: git subcommand parsing skips -C flag"
 # git -C /path/to/repo clean -fd should correctly identify "clean" as the subcommand
 (cd "$GIT_REPO" && echo "c-flag-test" > c-flag-untracked.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
   bash "$GIT_LINK" -C "$GIT_REPO" clean -fd 2>/dev/null
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
   _pass "git -C <repo> clean: subcommand parsed correctly, file snapshotted"
 else
@@ -2707,9 +2733,9 @@ else
 fi
 
 _section "git_wrapper: git clean -fd in clean repo does nothing"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git clean -fd 2>/dev/null)
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -eq "$before_count" ]]; then
   _pass "git clean -fd (clean repo): no snapshot needed"
 else
@@ -2731,7 +2757,7 @@ if [[ ! -d "$d_capR" ]]; then
 else
   _fail "-R: directory still exists"
 fi
-if ls -A "$TEST_TRASH/" 2>/dev/null | grep -q "cap-R-dir"; then
+if _trash_names | grep -q "cap-R-dir"; then
   _pass "-R: directory in trash"
 else
   _fail "-R: directory not in trash"
@@ -2857,7 +2883,7 @@ echo "first" > "$f_noext1"
 _rm "$f_noext1"
 echo "second" > "$f_noext1"
 _rm "$f_noext1"
-noext_hits=$(ls -A "$TEST_TRASH/" 2>/dev/null | grep "^README" || true)
+noext_hits=$(_trash_names | grep "^README" || true)
 noext_count=$(echo "$noext_hits" | grep -c "README" || true)
 if [[ "$noext_count" -ge 2 ]]; then
   _pass "no-ext collision: both copies in trash ($noext_count)"
@@ -2875,10 +2901,10 @@ _section "unlink_wrapper: safe mode non-AI routes to system trash"
 _set_mode safe
 f_unlink_safe="$WORK_DIR/unlink-safe.txt"
 echo "safe-unlink" > "$f_unlink_safe"
-before_sys=$(ls -A "$TEST_SYSTEM_TRASH/" 2>/dev/null | { grep -cv "^ai-trash$" || true; } | tr -d ' ')
+before_sys=$(_system_trash_count)
 env -i HOME="$TEST_HOME" PATH=/bin:/usr/bin:/usr/local/bin \
   bash "$UNLINK_LINK" "$f_unlink_safe" </dev/null 2>/dev/null || true
-after_sys=$(ls -A "$TEST_SYSTEM_TRASH/" 2>/dev/null | { grep -cv "^ai-trash$" || true; } | tr -d ' ')
+after_sys=$(_system_trash_count)
 if [[ ! -f "$f_unlink_safe" ]] && [[ "$after_sys" -gt "$before_sys" ]]; then
   _pass "unlink safe mode: non-AI routes to system trash"
 elif [[ ! -f "$f_unlink_safe" ]]; then
@@ -2892,10 +2918,10 @@ _section "AI detection: CLAUDECODE=1 env var (boolean value)"
 _set_mode selective
 f_claude="$WORK_DIR/claude-env-test.txt"
 echo "claude" > "$f_claude"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 HOME="$TEST_HOME" XDG_CONFIG_HOME="" CLAUDECODE=1 \
   bash "$REPO_DIR/rm_wrapper.sh" "$f_claude" 2>/dev/null
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ ! -f "$f_claude" ]] && [[ "$after_count" -gt "$before_count" ]]; then
   _pass "CLAUDECODE=1: detected as AI, file trashed"
 else
@@ -2940,7 +2966,7 @@ echo "prompt" > "$f_empty_prompt"
 _rm "$f_empty_prompt"
 echo "" | HOME="$TEST_HOME" bash "$REPO_DIR/ai-trash" empty 2>&1 || true
 # Item should still exist (prompt aborted)
-if ls -A "$TEST_TRASH/" 2>/dev/null | grep -q "empty-prompt"; then
+if _trash_names | grep -q "empty-prompt"; then
   _pass "empty (no --force): prompt aborted, item preserved"
 else
   _fail "empty (no --force): item unexpectedly deleted"
@@ -2964,15 +2990,156 @@ f_new_combo="$WORK_DIR/new-combo.txt"
 echo "new" > "$f_new_combo"
 _rm "$f_new_combo"
 _ai_trash empty --force --older-than 1 >/dev/null 2>&1
-if ! ls -A "$TEST_TRASH/" 2>/dev/null | grep -q "old-combo"; then
+if ! _trash_names | grep -q "old-combo"; then
   _pass "empty --force --older-than: old item deleted"
 else
   _fail "empty --force --older-than: old item still present"
 fi
-if ls -A "$TEST_TRASH/" 2>/dev/null | grep -q "new-combo"; then
+if _trash_names | grep -q "new-combo"; then
   _pass "empty --force --older-than: recent item preserved"
 else
   _fail "empty --force --older-than: recent item unexpectedly deleted"
+fi
+
+_ai_trash empty --force >/dev/null 2>&1
+
+# ─── Sidecar metadata lifecycle ────────────────────────────────────────
+# On Linux, per-item metadata is a sibling dotfile ".<name>.ai-trash" living
+# in the trash directory itself. It must never outlive the item it describes,
+# and must never be enumerated as though it were a trashed item. macOS keeps
+# metadata in xattrs, so these assertions are trivially true there; they earn
+# their keep on Linux, where each one covers a bug that shipped undetected
+# because the assertions used to list the trash with a bare `ls`.
+
+# Raw listing, sidecars included. Only for asserting a sidecar is ABSENT.
+_trash_raw() { ls -A "${1:-$TEST_TRASH}" 2>/dev/null; }
+
+_section "sidecar metadata: not enumerated as a trash item"
+_set_mode selective
+f_side="$WORK_DIR/sidecar-one.txt"
+echo "content" > "$f_side"
+side_before=$(_trash_count)
+_rm "$f_side"
+side_after=$(_trash_count)
+if [[ "$side_after" -eq $(( side_before + 1 )) ]]; then
+  _pass "sidecar: one trashed file counts as exactly one item"
+else
+  _fail "sidecar: expected $(( side_before + 1 )) items, got $side_after [$(_trash_raw | tr '\n' ' ')]"
+fi
+if [[ "$(_ai_trash list | grep -c 'sidecar-one.txt')" -eq 1 ]]; then
+  _pass "sidecar: 'list' shows the item once, not its metadata too"
+else
+  _fail "sidecar: 'list' output wrong: $(_ai_trash list)"
+fi
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "sidecar metadata: removed when its item is restored"
+_set_mode selective
+f_restore_side="$WORK_DIR/sidecar-restore.txt"
+echo "content" > "$f_restore_side"
+_rm "$f_restore_side"
+_ai_trash restore "sidecar-restore.txt" >/dev/null 2>&1
+if [[ -f "$f_restore_side" ]]; then
+  _pass "sidecar: item restored to its original path"
+else
+  _fail "sidecar: item not restored"
+fi
+if ! _trash_raw | grep -q "sidecar-restore"; then
+  _pass "sidecar: no orphaned metadata left after restore"
+else
+  _fail "sidecar: metadata orphaned after restore [$(_trash_raw | tr '\n' ' ')]"
+fi
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "sidecar metadata: removed when its item is purged by --older-than"
+_set_mode selective
+# The sidecar's own mtime is when metadata was written, not the item's age, so
+# an --older-than purge that backdates only the item must still take both.
+f_purge_side="$WORK_DIR/sidecar-purge.txt"
+echo "content" > "$f_purge_side"
+_rm "$f_purge_side"
+purge_side_item="$TEST_TRASH/sidecar-purge.txt"
+if [[ -e "$purge_side_item" ]]; then
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    touch -t "$(date -v-31d +%Y%m%d%H%M)" "$purge_side_item"
+  else
+    touch -t "$(date -d '31 days ago' +%Y%m%d%H%M)" "$purge_side_item"
+  fi
+fi
+_ai_trash empty --force --older-than 1 >/dev/null 2>&1
+if ! _trash_raw | grep -q "sidecar-purge"; then
+  _pass "sidecar: no orphaned metadata left after --older-than purge"
+else
+  _fail "sidecar: metadata orphaned after purge [$(_trash_raw | tr '\n' ' ')]"
+fi
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "sidecar metadata: removed when its item is purged by ai-trash-cleanup"
+_set_mode selective
+f_clean_side="$WORK_DIR/sidecar-cleanup.txt"
+echo "content" > "$f_clean_side"
+_rm "$f_clean_side"
+clean_side_item="$TEST_TRASH/sidecar-cleanup.txt"
+if [[ -e "$clean_side_item" ]]; then
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    touch -t "$(date -v-31d +%Y%m%d%H%M)" "$clean_side_item"
+  else
+    touch -t "$(date -d '31 days ago' +%Y%m%d%H%M)" "$clean_side_item"
+  fi
+fi
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/ai-trash-cleanup" >/dev/null 2>&1 || true
+if ! _trash_raw | grep -q "sidecar-cleanup"; then
+  _pass "sidecar: no orphaned metadata left after scheduled cleanup"
+else
+  _fail "sidecar: metadata orphaned after cleanup [$(_trash_raw | tr '\n' ' ')]"
+fi
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "sidecar metadata: pre-existing orphans are swept by cleanup"
+_set_mode selective
+# Upgrade path: versions before the sidecar fix left metadata behind whenever
+# an item was restored or purged. Those orphans must still get collected, or
+# excluding sidecars from enumeration strands them in the trash forever.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  _skip "sidecar orphan sweep: Linux-only (macOS uses xattrs, no sidecar)"
+else
+  orphan_meta="$TEST_TRASH/.ghost-item.txt.ai-trash"
+  printf 'original-path=%s\n' "$WORK_DIR/ghost-item.txt" > "$orphan_meta"
+  # A live item plus its sidecar, which must NOT be swept.
+  f_live_side="$WORK_DIR/sidecar-live.txt"
+  echo "content" > "$f_live_side"
+  _rm "$f_live_side"
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/ai-trash-cleanup" >/dev/null 2>&1 || true
+  if [[ ! -e "$orphan_meta" ]]; then
+    _pass "sidecar: orphaned metadata swept by cleanup"
+  else
+    _fail "sidecar: orphaned metadata survived cleanup"
+  fi
+  if [[ -e "$TEST_TRASH/.sidecar-live.txt.ai-trash" ]]; then
+    _pass "sidecar: live item's metadata not swept (control)"
+  else
+    _fail "sidecar: live item's metadata was wrongly swept"
+  fi
+fi
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "sidecar metadata: a recent item survives the same purge (control)"
+_set_mode selective
+# Negative control for the three purge assertions above: they would also pass
+# if the purge simply deleted everything, so prove it is age-selective.
+f_keep_side="$WORK_DIR/sidecar-keep.txt"
+echo "content" > "$f_keep_side"
+_rm "$f_keep_side"
+_ai_trash empty --force --older-than 1 >/dev/null 2>&1
+if _trash_names | grep -q "sidecar-keep"; then
+  _pass "sidecar: recent item and its metadata both survive an --older-than purge"
+else
+  _fail "sidecar: recent item was purged when it should have been kept"
 fi
 
 _ai_trash empty --force >/dev/null 2>&1
@@ -2982,9 +3149,9 @@ _section "git_wrapper: git checkout file.txt (bare path, no --)"
 # git reverts it. Our wrapper should detect this if -- is present or if . is used,
 # but bare path without -- should pass through (conservative approach).
 (cd "$GIT_REPO" && echo "bare-checkout-mod" > file.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git checkout file.txt 2>/dev/null) || true
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 # Conservative: wrapper only intercepts when -- is present or . is used
 # So bare path should pass through without snapshot
 if [[ "$after_count" -eq "$before_count" ]]; then
@@ -3003,9 +3170,9 @@ fi
 _section "git_wrapper: git branch -Df (combined force-delete flag)"
 main_branch=$(_rgit -C "$GIT_REPO" rev-parse --abbrev-ref HEAD)
 (cd "$GIT_REPO" && _rgit checkout -qb combined-flag-test && _rgit checkout -q "$main_branch" 2>/dev/null) || true
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git branch -Df combined-flag-test 2>/dev/null) || true
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
   _pass "git branch -Df: recovery info saved (combined flag detected)"
 else
@@ -3014,9 +3181,9 @@ fi
 
 _section "git_wrapper: git restore --staged only is non-destructive (no snapshot)"
 (cd "$GIT_REPO" && echo "staged-only-v2" > file.txt && _rgit add file.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git restore --staged file.txt 2>/dev/null) || true
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -eq "$before_count" ]]; then
   _pass "git restore --staged (v2): no snapshot (non-destructive)"
 else
@@ -3026,9 +3193,9 @@ fi
 
 _section "git_wrapper: git restore --source HEAD file is destructive (has --source)"
 (cd "$GIT_REPO" && echo "source-test" > file.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git restore --source HEAD file.txt 2>/dev/null) || true
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
   _pass "git restore --source HEAD: file snapshotted (destructive)"
 else
@@ -3040,9 +3207,9 @@ fi
 
 _section "git_wrapper: git clean -fxd (alternate flag order)"
 (cd "$GIT_REPO" && echo "fxd-test" > fxd-untracked.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git clean -fxd 2>/dev/null)
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
   _pass "git clean -fxd: file snapshotted (flag order variation)"
 else
@@ -3051,9 +3218,9 @@ fi
 
 _section "git_wrapper: git clean --force (long flag)"
 (cd "$GIT_REPO" && echo "long-force" > long-force.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git clean --force -d 2>/dev/null)
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
   _pass "git clean --force: long flag detected, file snapshotted"
 else
@@ -3062,17 +3229,17 @@ fi
 
 _section "git_wrapper: git reset --hard with no uncommitted changes"
 # When there's nothing to snapshot, stash create returns empty — should not crash
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git reset --hard HEAD 2>/dev/null)
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 # No changes means no snapshot needed — should not crash
 _pass "git reset --hard (clean): handled without crash (delta=$((after_count - before_count)))"
 
 _section "git_wrapper: git reset --merge snapshots modified files"
 (cd "$GIT_REPO" && echo "merge-reset-test" > file.txt && _rgit add file.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git reset --merge HEAD 2>/dev/null) || true
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
   _pass "git reset --merge: changes snapshotted"
 else
@@ -3081,9 +3248,9 @@ fi
 
 _section "git_wrapper: git reset --keep snapshots modified files"
 (cd "$GIT_REPO" && echo "keep-reset-test" > file.txt && _rgit add file.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 (cd "$GIT_REPO" && _git reset --keep HEAD 2>/dev/null) || true
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ "$after_count" -gt "$before_count" ]]; then
   _pass "git reset --keep: changes snapshotted"
 else
@@ -3099,10 +3266,10 @@ find_isolated="$WORK_DIR/find-isolated"
 mkdir -p "$find_isolated"
 ln -sf "$REPO_DIR/find_wrapper.sh" "$find_isolated/find_cmd"
 # PATH includes WORK_DIR (which has rm symlink) but find_isolated has no rm
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
   PATH="$WORK_DIR:$PATH" bash "$find_isolated/find_cmd" "$find_nolocalrm/dir" -name "*.txt" -delete 2>/dev/null
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ ! -f "$find_nolocalrm/dir/file.txt" ]]; then
   _pass "find (no local rm): file deleted"
   if [[ "$after_count" -gt "$before_count" ]]; then
@@ -3144,10 +3311,10 @@ _section "sandbox_guard: rm passes through when APP_SANDBOX_CONTAINER_ID is set"
 _set_mode selective
 f_sandbox_rm="$WORK_DIR/sandbox-rm.txt"
 echo "sandbox" > "$f_sandbox_rm"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor APP_SANDBOX_CONTAINER_ID="com.example.test" \
   bash "$REPO_DIR/rm_wrapper.sh" "$f_sandbox_rm" 2>/dev/null
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ ! -f "$f_sandbox_rm" ]] && [[ "$after_count" -eq "$before_count" ]]; then
   _pass "rm sandbox: file deleted by /bin/rm (not trashed)"
 elif [[ ! -f "$f_sandbox_rm" ]]; then
@@ -3159,10 +3326,10 @@ fi
 _section "sandbox_guard: rmdir passes through when APP_SANDBOX_CONTAINER_ID is set"
 d_sandbox_rmdir="$WORK_DIR/sandbox-rmdir"
 mkdir -p "$d_sandbox_rmdir"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor APP_SANDBOX_CONTAINER_ID="com.example.test" \
   bash "$REPO_DIR/rm_wrapper.sh" -d "$d_sandbox_rmdir" 2>/dev/null
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ ! -d "$d_sandbox_rmdir" ]] && [[ "$after_count" -eq "$before_count" ]]; then
   _pass "rmdir sandbox: dir deleted by /bin/rm (not trashed)"
 elif [[ ! -d "$d_sandbox_rmdir" ]]; then
@@ -3174,10 +3341,10 @@ fi
 _section "sandbox_guard: unlink passes through when APP_SANDBOX_CONTAINER_ID is set"
 f_sandbox_unlink="$WORK_DIR/sandbox-unlink.txt"
 echo "sandbox-unlink" > "$f_sandbox_unlink"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor APP_SANDBOX_CONTAINER_ID="com.example.test" \
   bash "$UNLINK_LINK" "$f_sandbox_unlink" 2>/dev/null || true
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ ! -f "$f_sandbox_unlink" ]] && [[ "$after_count" -eq "$before_count" ]]; then
   _pass "unlink sandbox: file deleted by real unlink (not trashed)"
 elif [[ -f "$f_sandbox_unlink" ]] && [[ "$after_count" -eq "$before_count" ]]; then
@@ -3190,10 +3357,10 @@ fi
 
 _section "sandbox_guard: git passes through when APP_SANDBOX_CONTAINER_ID is set"
 (cd "$GIT_REPO" && echo "sandbox-untracked" > sandbox-untracked.txt)
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor APP_SANDBOX_CONTAINER_ID="com.example.test" \
   bash "$GIT_LINK" -C "$GIT_REPO" clean -fd 2>/dev/null
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ ! -f "$GIT_REPO/sandbox-untracked.txt" ]] && [[ "$after_count" -eq "$before_count" ]]; then
   _pass "git sandbox: file cleaned by real git (not snapshotted)"
 elif [[ ! -f "$GIT_REPO/sandbox-untracked.txt" ]]; then
@@ -3206,10 +3373,10 @@ _section "sandbox_guard: find passes through when APP_SANDBOX_CONTAINER_ID is se
 find_sandbox_dir="$WORK_DIR/find-sandbox"
 mkdir -p "$find_sandbox_dir"
 echo "sandbox-find" > "$find_sandbox_dir/sandbox.txt"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor APP_SANDBOX_CONTAINER_ID="com.example.test" \
   PATH="$WORK_DIR:$PATH" bash "$FIND_LINK" "$find_sandbox_dir" -name "*.txt" -delete 2>/dev/null
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ ! -f "$find_sandbox_dir/sandbox.txt" ]] && [[ "$after_count" -eq "$before_count" ]]; then
   _pass "find sandbox: file deleted by real find (not trashed)"
 elif [[ ! -f "$find_sandbox_dir/sandbox.txt" ]]; then
@@ -3229,9 +3396,9 @@ _set_mode selective
 echo 'BYPASS_TRASH_PATTERNS=("^'"$WORK_DIR"'/bypass-canary")' >> "$TEST_CONF_DIR/config.sh"
 bypass_canary="$WORK_DIR/bypass-canary.txt"
 echo "canary" > "$bypass_canary"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 _rm "$bypass_canary"
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ ! -f "$bypass_canary" ]] && [[ "$after_count" -eq "$before_count" ]]; then
   _pass "bypass: matched file permanently deleted (not trashed)"
 elif [[ ! -f "$bypass_canary" ]]; then
@@ -3245,9 +3412,9 @@ _set_mode selective
 echo 'BYPASS_TRASH_PATTERNS=("^/no/match/here")' >> "$TEST_CONF_DIR/config.sh"
 bypass_other="$WORK_DIR/bypass-other.txt"
 echo "other" > "$bypass_other"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 _rm "$bypass_other"
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ ! -f "$bypass_other" ]] && [[ "$after_count" -gt "$before_count" ]]; then
   _pass "bypass: non-matching file correctly trashed"
 else
@@ -3262,9 +3429,9 @@ fake_git_dir="$WORK_DIR/fake-repo/.git"
 mkdir -p "$fake_git_dir"
 lock_file="$fake_git_dir/index.lock"
 echo "" > "$lock_file"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 _rm "$lock_file"
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ ! -f "$lock_file" ]] && [[ "$after_count" -eq "$before_count" ]]; then
   _pass "bypass: .git/index.lock permanently deleted by default pattern"
 elif [[ ! -f "$lock_file" ]]; then
@@ -3282,9 +3449,9 @@ _set_mode selective
 fake_android_build="$WORK_DIR/mobile-app/build/android"
 mkdir -p "$fake_android_build"
 echo "artifact" > "$fake_android_build/app-release.aab"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 _rm -rf "$fake_android_build"
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ ! -d "$fake_android_build" ]] && [[ "$after_count" -eq "$before_count" ]]; then
   _pass "bypass: build/android output permanently deleted by default pattern"
 elif [[ ! -d "$fake_android_build" ]]; then
@@ -3303,9 +3470,9 @@ snap_repo="$WORK_DIR/snap-repo/.git"
 mkdir -p "$snap_repo"
 snap_file="$snap_repo/.claude-bash-pre-a05971f4-90c7-4551-8b1b-83ae3cda1a0f.snapshot"
 echo "shell state" > "$snap_file"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 _rm "$snap_file"
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ ! -f "$snap_file" ]] && [[ "$after_count" -eq "$before_count" ]]; then
   _pass "bypass: .git/ bash snapshot permanently deleted by default pattern"
 elif [[ ! -f "$snap_file" ]]; then
@@ -3325,9 +3492,9 @@ wt_git_dir="$WORK_DIR/wt-repo/.git/worktrees/feature-x"
 mkdir -p "$wt_git_dir"
 wt_snap="$wt_git_dir/.claude-bash-pre-89075927-31b0-4c3b-a473-025e5339d166.snapshot"
 echo "shell state" > "$wt_snap"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 _rm "$wt_snap"
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ ! -f "$wt_snap" ]] && [[ "$after_count" -eq "$before_count" ]]; then
   _pass "bypass: worktree bash snapshot permanently deleted by default pattern"
 elif [[ ! -f "$wt_snap" ]]; then
@@ -3345,9 +3512,9 @@ _set_mode selective
 mkdir -p "$WORK_DIR/notes"
 decoy_snap="$WORK_DIR/notes/.claude-bash-pre-a05971f4-90c7-4551-8b1b-83ae3cda1a0f.snapshot"
 echo "user data" > "$decoy_snap"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 _rm "$decoy_snap"
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ ! -f "$decoy_snap" ]] && [[ "$after_count" -gt "$before_count" ]]; then
   _pass "bypass: snapshot-named file outside .git/ correctly went to trash"
 else
@@ -3362,9 +3529,9 @@ _set_mode selective
 aider_cache="$WORK_DIR/aider-proj/.aider.tags.cache.v4"
 mkdir -p "$aider_cache"
 echo "cache" > "$aider_cache/cache.db"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 _rm -rf "$aider_cache"
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ ! -d "$aider_cache" ]] && [[ "$after_count" -eq "$before_count" ]]; then
   _pass "bypass: aider tags cache permanently deleted by default pattern"
 elif [[ ! -d "$aider_cache" ]]; then
@@ -3381,9 +3548,9 @@ _set_mode selective
 aider_history="$WORK_DIR/aider-proj/.aider.chat.history.md"
 mkdir -p "$WORK_DIR/aider-proj"
 echo "conversation" > "$aider_history"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 _rm "$aider_history"
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ ! -f "$aider_history" ]] && [[ "$after_count" -gt "$before_count" ]]; then
   _pass "bypass: aider chat history correctly went to trash"
 else
@@ -3401,9 +3568,9 @@ claude_code_cache="$TEST_HOME/Library/Application Support/Claude/Code Cache/js"
 mkdir -p "$claude_cache" "$claude_code_cache"
 echo "blob" > "$claude_cache/f_000001"
 echo "blob" > "$claude_code_cache/index"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 _rm -rf "$claude_cache" "$claude_code_cache"
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ ! -d "$claude_cache" ]] && [[ ! -d "$claude_code_cache" ]] && [[ "$after_count" -eq "$before_count" ]]; then
   _pass "bypass: Claude desktop Cache and Code Cache permanently deleted"
 elif [[ ! -d "$claude_cache" ]] && [[ ! -d "$claude_code_cache" ]]; then
@@ -3420,9 +3587,9 @@ _set_mode selective
 fake_framework="$WORK_DIR/SomeKit.framework"
 mkdir -p "$fake_framework"
 echo "binary" > "$fake_framework/SomeKit"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 _rm -rf "$fake_framework"
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ ! -d "$fake_framework" ]] && [[ "$after_count" -eq "$before_count" ]]; then
   _pass "bypass: .framework bundle permanently deleted by default pattern"
 elif [[ ! -d "$fake_framework" ]]; then
@@ -3437,9 +3604,9 @@ _section "bypass_trash_patterns: default .provisionprofile pattern"
 _set_mode selective
 provprofile="$WORK_DIR/embedded.provisionprofile"
 echo "profile" > "$provprofile"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 _rm "$provprofile"
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ ! -f "$provprofile" ]] && [[ "$after_count" -eq "$before_count" ]]; then
   _pass "bypass: .provisionprofile permanently deleted by default pattern"
 elif [[ ! -f "$provprofile" ]]; then
@@ -3455,9 +3622,9 @@ _set_mode selective
 pycache_dir="$WORK_DIR/proj/__pycache__"
 mkdir -p "$pycache_dir"
 echo "bytecode" > "$pycache_dir/utils.cpython-312.pyc"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 _rm -rf "$pycache_dir"
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ ! -d "$pycache_dir" ]] && [[ "$after_count" -eq "$before_count" ]]; then
   _pass "bypass: __pycache__ permanently deleted by default pattern"
 elif [[ ! -d "$pycache_dir" ]]; then
@@ -3475,9 +3642,9 @@ pyc_dir="$WORK_DIR/proj/src"
 mkdir -p "$pyc_dir"
 pyc_file="$pyc_dir/module.pyc"
 echo "bytecode" > "$pyc_file"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 _rm "$pyc_file"
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ ! -f "$pyc_file" ]] && [[ "$after_count" -eq "$before_count" ]]; then
   _pass "bypass: .pyc permanently deleted by default pattern"
 elif [[ ! -f "$pyc_file" ]]; then
@@ -3495,9 +3662,9 @@ ds_dir="$WORK_DIR/proj"
 mkdir -p "$ds_dir"
 ds_file="$ds_dir/.DS_Store"
 echo "dsstore" > "$ds_file"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 _rm "$ds_file"
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ ! -f "$ds_file" ]] && [[ "$after_count" -eq "$before_count" ]]; then
   _pass "bypass: .DS_Store permanently deleted by default pattern"
 elif [[ ! -f "$ds_file" ]]; then
@@ -3514,9 +3681,9 @@ _set_mode selective
 dd_dir="$WORK_DIR/Library/Developer/Xcode/DerivedData/MyApp-abc123"
 mkdir -p "$dd_dir"
 echo "build" > "$dd_dir/Build.db"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 _rm -rf "$dd_dir"
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ ! -d "$dd_dir" ]] && [[ "$after_count" -eq "$before_count" ]]; then
   _pass "bypass: /DerivedData/ permanently deleted by default pattern"
 elif [[ ! -d "$dd_dir" ]]; then
@@ -3534,9 +3701,9 @@ class_dir="$WORK_DIR/proj/out"
 mkdir -p "$class_dir"
 class_file="$class_dir/Main.class"
 echo "cafebabe" > "$class_file"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 _rm "$class_file"
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ ! -f "$class_file" ]] && [[ "$after_count" -eq "$before_count" ]]; then
   _pass "bypass: .class permanently deleted by default pattern"
 elif [[ ! -f "$class_file" ]]; then
@@ -3553,9 +3720,9 @@ _set_mode selective
 pods_dir="$WORK_DIR/proj/Pods/AFNetworking"
 mkdir -p "$pods_dir"
 echo "pod" > "$pods_dir/AFNetworking.h"
-before_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(_trash_count)
 _rm -rf "$WORK_DIR/proj/Pods"
-after_count=$(ls -A "$TEST_TRASH/" 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(_trash_count)
 if [[ ! -d "$pods_dir" ]] && [[ "$after_count" -eq "$before_count" ]]; then
   _pass "bypass: /Pods/ permanently deleted by default pattern"
 elif [[ ! -d "$pods_dir" ]]; then

@@ -339,6 +339,38 @@ _matches_bypass_pattern() {
 _stat_dev()  { [[ "$PLATFORM" == "Darwin" ]] && stat -f %d "$1" 2>/dev/null || stat -c %d "$1" 2>/dev/null; }
 _stat_size() { [[ "$PLATFORM" == "Darwin" ]] && stat -f %z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null; }
 
+# ─── Sidecar metadata (Linux only) ─────────────────────────────────────
+# macOS stores per-item metadata in extended attributes, so a trashed item is
+# a single filesystem entry. Linux has no xattr dependency, so metadata lives
+# in a sibling dotfile ".<name>.ai-trash" inside the same trash directory.
+#
+# That sidecar is bookkeeping ABOUT a trashed item, never a trashed item
+# itself. Two invariants follow, and both must hold at every call site:
+#   1. It is excluded from any enumeration of trash contents (list, status,
+#      empty, cleanup inventory), or it shows up as a bogus zero-metadata
+#      entry and is counted, evicted, and purged as though it were user data.
+#   2. It is removed with its item. Removing the item alone orphans the
+#      sidecar in the trash directory permanently: nothing else ever
+#      references it, and every later enumeration has to filter it out.
+# Route every removal through _remove_trash_item so 2 cannot be forgotten.
+
+# Path of the sidecar metadata file belonging to a trashed item.
+_meta_path() { printf '%s/.%s.ai-trash' "${1%/*}" "${1##*/}"; }
+
+# True when a path is a sidecar metadata file rather than a trashed item.
+_is_meta_path() { [[ "${1##*/}" == .*.ai-trash ]]; }
+
+# Permanently remove a trashed item together with its sidecar metadata.
+# Safe on macOS, where there is no sidecar to remove.
+_remove_trash_item() {
+  local item="$1"
+  /bin/rm -rf "$item"
+  if [[ "$PLATFORM" != "Darwin" ]]; then
+    /bin/rm -f "$(_meta_path "$item")" 2>/dev/null || true
+  fi
+  return 0
+}
+
 # Write metadata to a trashed file.
 # macOS: extended attributes. Linux: sidecar file (no xattr dependency).
 _write_meta() {
@@ -353,7 +385,7 @@ _write_meta() {
   else
     printf 'original-path=%s\ndeleted-at=%s\ndeleted-by=%s\ndeleted-by-process=%s\noriginal-size=%s\nprocess-chain=%s\n' \
       "$orig_path" "$deleted_at" "$deleted_by" "$deleted_proc" "$orig_size" "$proc_chain" \
-      > "${file%/*}/.${file##*/}.ai-trash" 2>/dev/null || true
+      > "$(_meta_path "$file")" 2>/dev/null || true
   fi
 }
 
@@ -363,7 +395,7 @@ _write_meta_field() {
   if [[ "$PLATFORM" == "Darwin" ]]; then
     xattr -w "com.ai-trash.$key" "$value" "$file" >/dev/null 2>&1 || true
   else
-    printf '%s=%s\n' "$key" "$value" >> "${file%/*}/.${file##*/}.ai-trash" 2>/dev/null || true
+    printf '%s=%s\n' "$key" "$value" >> "$(_meta_path "$file")" 2>/dev/null || true
   fi
 }
 
