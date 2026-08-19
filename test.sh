@@ -4281,6 +4281,89 @@ fi
 
 _ai_trash empty --force >/dev/null 2>&1
 
+_section "builtin bypass: the shipped config template contributes no patterns of its own"
+# Class-level guard for the regression that keeps being proposed: a newly
+# shipped default pasted into config.default.sh instead of
+# _BUILTIN_BYPASS_PATTERNS in ai-trash-lib.sh. install.sh writes
+# ~/.config/ai-trash/config.sh only when that file does not already exist, so a
+# default living in the template reaches new installs only and freezes on every
+# machine that has ever upgraded. That is the shape that lost two releases of
+# bypass patterns before the builtins moved into the library.
+#
+# Asserting it pattern by pattern would only ever cover the ones somebody
+# remembered to list, so this asserts the template's WHOLE contribution is
+# empty: switch the builtins off on a fresh install and nothing may be
+# bypassed at all. Any shipped default hiding in the template shows up here as
+# a non-zero effective count, whichever one it is.
+_set_mode selective
+echo 'USE_BUILTIN_BYPASS_PATTERNS=false' >> "$TEST_CONF_DIR/config.sh"
+tmpl_out=$(_ai_trash bypass-patterns)
+tmpl_ok=true
+tmpl_why=""
+printf '%s' "$tmpl_out" | grep -qF 'Effective: 0 pattern(s)' \
+  || { tmpl_ok=false; tmpl_why="$(printf '%s' "$tmpl_out" | grep -F 'Effective:')"; }
+printf '%s' "$tmpl_out" | grep -qF 'Your additions (BYPASS_TRASH_PATTERNS' \
+  || { tmpl_ok=false; tmpl_why="$tmpl_why; additions section missing"; }
+printf '%s' "$tmpl_out" | grep -F 'Your additions (BYPASS_TRASH_PATTERNS' | grep -qF ': none' \
+  || { tmpl_ok=false; tmpl_why="$tmpl_why; template declares its own additions"; }
+if [[ "$tmpl_ok" == true ]]; then
+  _pass "builtin bypass: config.default.sh ships no bypass patterns of its own"
+else
+  _fail "builtin bypass: config.default.sh carries a shipped default; it belongs in _BUILTIN_BYPASS_PATTERNS in ai-trash-lib.sh, which upgrades replace ($tmpl_why)"
+fi
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "builtin bypass: control, a pattern in the template IS reported"
+# Positive control for the assertion above, which concludes an ABSENCE. A
+# renamed output field or a parse that matched nothing would satisfy "no
+# patterns" just as well as an actually-clean template, so the same command
+# has to be shown finding a pattern that really is in the config file.
+_set_mode selective
+echo 'USE_BUILTIN_BYPASS_PATTERNS=false' >> "$TEST_CONF_DIR/config.sh"
+echo 'BYPASS_TRASH_PATTERNS+=("/template-canary/")' >> "$TEST_CONF_DIR/config.sh"
+ctrl_out=$(_ai_trash bypass-patterns)
+# Asserts "the canary is reported and the effective count is not zero", not an
+# exact count: the control has to answer "can this command report a pattern
+# that is there", independently of how many other patterns the template does
+# or does not carry, or it just restates the assertion it is controlling for.
+if printf '%s' "$ctrl_out" | grep -qF '/template-canary/' \
+   && ! printf '%s' "$ctrl_out" | grep -qF 'Effective: 0 pattern(s)'; then
+  _pass "builtin bypass: control, a config-borne pattern is reported as effective"
+else
+  _fail "builtin bypass: control failed, so the clean-template assertion above could not have failed either -- output was: $ctrl_out"
+fi
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "builtin bypass: bash-snapshot default ships from the library, not the template"
+# Matched pair with "default Claude Code bash-snapshot pattern" above, which
+# shows the snapshot IS permanently deleted on a stock install. Here the only
+# thing that changes is the master switch, so the two together pin down WHERE
+# the pattern ships from: with the builtins off, a fresh install must leave the
+# snapshot recoverable. If it is still destroyed, the pattern has been copied
+# into config.default.sh, and every already-upgraded machine would silently
+# never receive it.
+_set_mode selective
+echo 'USE_BUILTIN_BYPASS_PATTERNS=false' >> "$TEST_CONF_DIR/config.sh"
+tmplsnap_repo="$WORK_DIR/tmpl-snap-proj/.git"
+mkdir -p "$tmplsnap_repo"
+tmpl_snap="$tmplsnap_repo/.claude-bash-pre-3f7c2b91-5a4d-4e88-9c10-6de0a2f4b7c1.snapshot"
+echo "shell state" > "$tmpl_snap"
+before_count=$(_trash_count)
+_rm "$tmpl_snap"
+after_count=$(_trash_count)
+if [[ ! -f "$tmpl_snap" ]] && [[ "$after_count" -gt "$before_count" ]]; then
+  _pass "builtin bypass: snapshot default comes from ai-trash-lib.sh, not config.default.sh"
+elif [[ ! -f "$tmpl_snap" ]]; then
+  _fail "builtin bypass: snapshot still bypassed with builtins off, so the pattern is in config.default.sh where upgrades never deliver it"
+else
+  _fail "builtin bypass: snapshot still exists"
+fi
+/bin/rm -rf "$WORK_DIR/tmpl-snap-proj"
+
+_ai_trash empty --force >/dev/null 2>&1
+
 _section "ai-trash bypass-patterns: lists builtins and flags a disabled one"
 # The disable list matches builtins by exact string, so this listing is what
 # makes the opt-out usable at all: without it there is nothing to copy from.
