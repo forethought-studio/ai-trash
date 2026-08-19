@@ -190,6 +190,12 @@ RSYNC_PROTECT_ALL_LOCAL=false
 # in ai-trash-lib.sh, which every upgrade DOES replace, so new shipped defaults
 # reach you automatically. See `ai-trash bypass-patterns` for the live list.
 #
+# The snapshots behind that 90.4% are Claude Code's per-Bash-call git snapshot,
+# and the builtin covering them is the one most likely to prompt "why was a file
+# under .git/ permanently deleted?". Its exact string is quoted in the opt-out
+# example below, which is also where you paste it to make those snapshots
+# recoverable again.
+#
 # The three knobs below are yours; the builtin list is not meant to be edited.
 #
 # Patterns are extended regular expressions (ERE), matched with bash =~.
@@ -223,11 +229,19 @@ BYPASS_TRASH_PATTERNS=(
 # and warns about entries here that match no builtin (a typo would otherwise
 # fail silently).
 #
-# Example - keep node_modules and .DS_Store recoverable:
+# Example - keep node_modules, .DS_Store, and Claude Code's per-Bash-call
+# .git snapshots recoverable:
 #   DISABLE_BUILTIN_BYPASS_PATTERNS=(
 #     "/node_modules/"
 #     "\.DS_Store$"
+#     "/\.git/(.*/)?\.claude-bash-pre-[0-9a-f-]+\.snapshot$"
 #   )
+#
+# Those strings are quoted from the shipped list rather than invented for the
+# example, and the suite feeds every one of them back through
+# `ai-trash bypass-patterns` and requires it to still name a live builtin. A
+# string that stopped matching one would do nothing at all here, silently,
+# which is the failure this section warns about.
 #
 DISABLE_BUILTIN_BYPASS_PATTERNS=()
 

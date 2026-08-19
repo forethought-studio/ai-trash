@@ -137,6 +137,47 @@ _set_mode() {
   sed -i.bak "s/^MODE=.*/MODE=$1/" "$TEST_CONF_DIR/config.sh" && /bin/rm -f "${TEST_CONF_DIR}/config.sh.bak"
 }
 
+# Strings the shipped config template quotes inside a commented DISABLE_BUILTIN_*
+# example, e.g.
+#     #   DISABLE_BUILTIN_BYPASS_PATTERNS=(
+#     #     "/node_modules/"
+#     #   )
+# Both disable lists match by EXACT string, so those quoted strings are
+# copy-paste instructions rather than illustrations: one that no longer names a
+# shipped default does nothing at all when pasted, silently. One reader for
+# every such list, so a third one added later is a single call away from being
+# covered too.
+_template_optout_strings() {
+  local array="$1"
+  _AIT_ARR="$array" awk '
+    BEGIN { arr = ENVIRON["_AIT_ARR"] }
+    $0 ~ "^#[[:space:]]+" arr "=\\(" {inblock=1; next}
+    inblock && /^#[[:space:]]+\)/ {inblock=0}
+    inblock {print}
+  ' "$REPO_DIR/config.default.sh" | sed -n 's/^#[[:space:]]*"\(.*\)"$/\1/p'
+}
+
+# True when an `ai-trash detection` / `ai-trash bypass-patterns` listing reported
+# EXACTLY this string as disabled. The comparison has to be exact rather than a
+# substring: ai-trash ships "q" as a detection entry, and "q" occurs in most
+# lines of either listing.
+_reported_disabled() {
+  local out="$1" want="$2"
+  # The wanted string goes in through the ENVIRON array, never through `awk -v`:
+  # a command-line assignment is escape-processed, so `\.DS_Store$` would arrive
+  # as `.DS_Store$` and every backslashed pattern would look absent.
+  printf '%s\n' "$out" | _AIT_WANT="$want" awk '
+    BEGIN { want = ENVIRON["_AIT_WANT"] }
+    /\[disabled by your config\]$/ {
+      line = $0
+      sub(/[[:space:]]*\[disabled by your config\]$/, "", line)
+      sub(/^[[:space:]]+/, "", line)
+      if (line == want) { found = 1 }
+    }
+    END { exit !found }
+  '
+}
+
 # ─── Tests ─────────────────────────────────────────────────────────────
 
 _section "ai-trash CLI: status on empty trash"
@@ -4364,6 +4405,89 @@ fi
 
 _ai_trash empty --force >/dev/null 2>&1
 
+_section "builtin bypass: every opt-out string the config template quotes is a live builtin"
+# DISABLE_BUILTIN_BYPASS_PATTERNS matches builtins by EXACT string, so the
+# strings config.default.sh quotes in its opt-out example are copy-paste
+# instructions, not illustrations. Let a shipped pattern be renamed, re-scoped
+# (as the bash-snapshot one was, when (.*/)? was added to reach linked
+# worktrees) or dropped, and the quoted string still looks right while doing
+# nothing at all: the user who pasted it believes a builtin is off while it
+# goes on permanently deleting.
+#
+# Nothing tied the two files together except whoever remembered to edit both.
+# This feeds the template's own quoted strings back through the very command
+# the template tells you to copy them from, and requires ai-trash to report
+# each one as an actually-disabled builtin.
+_set_mode selective
+optq_patterns=$(_template_optout_strings DISABLE_BUILTIN_BYPASS_PATTERNS)
+optq_count=$(printf '%s\n' "$optq_patterns" | { grep -c . || true; } | tr -d ' ')
+{
+  echo 'DISABLE_BUILTIN_BYPASS_PATTERNS=('
+  printf '%s\n' "$optq_patterns" | while IFS= read -r optq_p; do
+    [[ -n "$optq_p" ]] && printf '  "%s"\n' "$optq_p"
+  done
+  echo ')'
+} >> "$TEST_CONF_DIR/config.sh"
+optq_out=$(_ai_trash bypass-patterns)
+optq_ok=true
+optq_why=""
+# An example that quotes nothing would satisfy every per-pattern check below
+# vacuously, so the extraction has to be shown to have found something first.
+(( optq_count >= 3 )) || { optq_ok=false; optq_why="template quotes only $optq_count opt-out string(s)"; }
+# Named explicitly because it is the builtin a user is most likely to look up:
+# it was 90.4% of a profiled host's trashed items, and it permanently deletes a
+# path under .git/, which is the kind of thing people come to this file about.
+printf '%s\n' "$optq_patterns" | grep -qxF '/\.git/(.*/)?\.claude-bash-pre-[0-9a-f-]+\.snapshot$' \
+  || { optq_ok=false; optq_why="$optq_why; template no longer quotes the bash-snapshot pattern"; }
+if printf '%s' "$optq_out" | grep -qF 'WARNING: DISABLE_BUILTIN_BYPASS_PATTERNS entries matching no builtin'; then
+  optq_ok=false
+  optq_why="$optq_why; ai-trash reported a quoted string as matching no builtin"
+fi
+while IFS= read -r optq_p; do
+  [[ -z "$optq_p" ]] && continue
+  _reported_disabled "$optq_out" "$optq_p" \
+    || { optq_ok=false; optq_why="$optq_why; '$optq_p' names no live builtin"; }
+done <<< "$optq_patterns"
+if [[ "$optq_ok" == true ]]; then
+  _pass "builtin bypass: all $optq_count opt-out string(s) quoted by config.default.sh name live builtins"
+else
+  _fail "builtin bypass: config.default.sh quotes an opt-out string that no shipped builtin matches, so pasting it would silently do nothing ($optq_why)"
+fi
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "builtin bypass: control, an opt-out string matching no builtin is reported"
+# Negative control for the assertion above, which concludes a PRESENCE ("every
+# quoted string is a live builtin"). A WARNING line that never fires, or a
+# substring match loose enough to hit anything, would let that assertion pass
+# whatever the template said. Same command, same config shape, one string that
+# cannot be a builtin and one that is.
+_set_mode selective
+{
+  echo 'DISABLE_BUILTIN_BYPASS_PATTERNS=('
+  echo '  "/node_modules/"'
+  echo '  "/not-a-shipped-builtin-canary/"'
+  echo ')'
+} >> "$TEST_CONF_DIR/config.sh"
+ctrlq_out=$(_ai_trash bypass-patterns)
+ctrlq_ok=true
+ctrlq_why=""
+printf '%s' "$ctrlq_out" | grep -qF 'WARNING: DISABLE_BUILTIN_BYPASS_PATTERNS entries matching no builtin' \
+  || { ctrlq_ok=false; ctrlq_why="no warning for a string that matches no builtin"; }
+printf '%s' "$ctrlq_out" | grep -qF '/not-a-shipped-builtin-canary/' \
+  || { ctrlq_ok=false; ctrlq_why="$ctrlq_why; the offending string was not named"; }
+# The real builtin next to it must still come back disabled, or the control
+# would pass by flagging everything, which proves nothing about the template.
+_reported_disabled "$ctrlq_out" '/node_modules/' \
+  || { ctrlq_ok=false; ctrlq_why="$ctrlq_why; a real builtin was not reported as disabled"; }
+if [[ "$ctrlq_ok" == true ]]; then
+  _pass "builtin bypass: control, a non-builtin opt-out string is reported while a real one is honoured"
+else
+  _fail "builtin bypass: control failed, so the quoted-opt-out assertion above could not have failed either ($ctrlq_why) -- output was: $ctrlq_out"
+fi
+
+_ai_trash empty --force >/dev/null 2>&1
+
 _section "ai-trash bypass-patterns: lists builtins and flags a disabled one"
 # The disable list matches builtins by exact string, so this listing is what
 # makes the opt-out usable at all: without it there is nothing to copy from.
@@ -4597,6 +4721,77 @@ if echo "$det_out" | grep -q "matching no shipped entry" && echo "$det_out" | gr
 else
   _fail "detection: orphaned disable entry not reported -- output was: $det_out"
 fi
+
+_section "builtin detection: every opt-out string the config template quotes is a live shipped entry"
+# Sibling of "builtin bypass: every opt-out string the config template quotes is
+# a live builtin", same shape on the other exact-string list:
+# DISABLE_BUILTIN_AI_DETECTION also matches shipped entries verbatim, and
+# config.default.sh quotes "q" (Amazon Q Developer CLI's binary name) as the
+# worked example. Drop or rename that shipped entry and the example still reads
+# correctly while instructing users to write a line that does nothing.
+#
+# The direction of the damage is the opposite of the bypass list's and worse to
+# leave undetected: a bypass opt-out that silently fails keeps deleting
+# permanently, while a detection opt-out that silently fails keeps treating an
+# innocent tool as an AI caller. Both are the user believing a setting took
+# effect when it did not.
+_set_mode selective
+detq_entries=$(_template_optout_strings DISABLE_BUILTIN_AI_DETECTION)
+detq_count=$(printf '%s\n' "$detq_entries" | { grep -c . || true; } | tr -d ' ')
+{
+  echo 'DISABLE_BUILTIN_AI_DETECTION=('
+  printf '%s\n' "$detq_entries" | while IFS= read -r detq_e; do
+    [[ -n "$detq_e" ]] && printf '  "%s"\n' "$detq_e"
+  done
+  echo ')'
+} >> "$TEST_CONF_DIR/config.sh"
+detq_out=$(_ai_trash detection)
+detq_ok=true
+detq_why=""
+# An example that quotes nothing would satisfy the per-entry check vacuously.
+(( detq_count >= 1 )) || { detq_ok=false; detq_why="template quotes no detection opt-out string"; }
+if printf '%s' "$detq_out" | grep -qF 'WARNING: DISABLE_BUILTIN_AI_DETECTION entries matching no shipped entry'; then
+  detq_ok=false
+  detq_why="$detq_why; ai-trash reported a quoted string as matching no shipped entry"
+fi
+while IFS= read -r detq_e; do
+  [[ -z "$detq_e" ]] && continue
+  _reported_disabled "$detq_out" "$detq_e" \
+    || { detq_ok=false; detq_why="$detq_why; '$detq_e' names no live shipped entry"; }
+done <<< "$detq_entries"
+if [[ "$detq_ok" == true ]]; then
+  _pass "builtin detection: all $detq_count opt-out string(s) quoted by config.default.sh name live shipped entries"
+else
+  _fail "builtin detection: config.default.sh quotes an opt-out string that no shipped entry matches, so pasting it would silently do nothing ($detq_why)"
+fi
+
+_section "builtin detection: control, an opt-out string matching no shipped entry is reported"
+# Negative control for the assertion above, which concludes a PRESENCE. Same
+# command, same config shape, one string that cannot be a shipped entry next to
+# one that is, so a warning that never fires or a match that hits anything
+# cannot pass as a clean template.
+_set_mode selective
+{
+  echo 'DISABLE_BUILTIN_AI_DETECTION=('
+  echo '  "q"'
+  echo '  "not-a-shipped-detection-canary"'
+  echo ')'
+} >> "$TEST_CONF_DIR/config.sh"
+ctrld_out=$(_ai_trash detection)
+ctrld_ok=true
+ctrld_why=""
+printf '%s' "$ctrld_out" | grep -qF 'WARNING: DISABLE_BUILTIN_AI_DETECTION entries matching no shipped entry' \
+  || { ctrld_ok=false; ctrld_why="no warning for a string that matches nothing"; }
+printf '%s' "$ctrld_out" | grep -qF 'not-a-shipped-detection-canary' \
+  || { ctrld_ok=false; ctrld_why="$ctrld_why; the offending string was not named"; }
+_reported_disabled "$ctrld_out" 'q' \
+  || { ctrld_ok=false; ctrld_why="$ctrld_why; a real shipped entry was not reported as disabled"; }
+if [[ "$ctrld_ok" == true ]]; then
+  _pass "builtin detection: control, a non-shipped opt-out string is reported while a real one is honoured"
+else
+  _fail "builtin detection: control failed, so the quoted-opt-out assertion above could not have failed either ($ctrld_why) -- output was: $ctrld_out"
+fi
+
 
 _set_mode selective
 _ai_trash empty --force >/dev/null 2>&1
