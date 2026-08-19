@@ -64,7 +64,7 @@ _xattr() {
 
 # ─── Iterator: all ai-trash items from both locations ──────────────────
 # Yields null-terminated paths. Optional arg: mtime_days (for --older-than).
-# macOS: new-style items in ~/.Trash/ (xattr-tagged) + legacy ~/.Trash/ai-trash/
+# macOS: xattr-tagged items at the top level of ~/.Trash/
 # Linux: ~/.local/share/Trash/ai-trash/ only (unchanged)
 _each_ai_trash_item() {
   local mtime_arg="${1:-}"

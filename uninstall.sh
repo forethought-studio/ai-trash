@@ -123,11 +123,11 @@ done
 # ─── Done ──────────────────────────────────────────────────────────────
 
 if [[ "$PLATFORM" == "Darwin" ]]; then
-  TRASH_DIR="~/.Trash/ai-trash"
+  TRASH_DIR="~/.Trash"
 else
   TRASH_DIR="~/.local/share/Trash/ai-trash"
 fi
 
 echo ""
-echo "Uninstalled. Your AI trash contents are still in $TRASH_DIR/"
+echo "Uninstalled. Your AI trash contents are still in $TRASH_DIR (run 'ai-trash list' to see them)."
 echo "To remove them permanently: /bin/rm -rf $TRASH_DIR"

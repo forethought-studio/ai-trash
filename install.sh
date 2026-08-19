@@ -180,7 +180,7 @@ fi
 # ─── Done ──────────────────────────────────────────────────────────────
 
 if [[ "$PLATFORM" == "Darwin" ]]; then
-  TRASH_EXAMPLE="~/.Trash/ai-trash/"
+  TRASH_EXAMPLE="~/.Trash"
 else
   TRASH_EXAMPLE="~/.local/share/Trash/ai-trash/"
 fi
