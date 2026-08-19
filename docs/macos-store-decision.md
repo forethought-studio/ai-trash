@@ -215,7 +215,9 @@ CPU cost vanish there.
 ### Empty Trash: the difference that actually separates the two candidates
 
 `empty-trash-probe.sh`, run on the VM. Both layouts seeded, plus a normal
-trashed file as a bystander, then Finder was told `empty trash`:
+trashed file as a bystander, then Finder was told `empty trash`. Result
+reproduced twice, on separate runs (`empty-trash-probe-vm.log`,
+`empty-trash-probe-rerun-vm.log`):
 
     nested store dir  : DESTROYED
     nested store item : DESTROYED
@@ -235,6 +237,18 @@ exists to serve.
 macOS's own "Empty Trash automatically after 30 days" setting was not tested
 here, but it acts on the same directory, so the same reasoning applies to it and
 it fires without anyone clicking anything.
+
+This evidence cost something and the brief should say so. The first run of that
+probe emptied a VM trash that was not empty, destroying three sparse bundles
+another project's tests had deleted earlier and left recoverable. They were
+regenerable fixtures and no authored work was lost, but they were recoverable
+before the probe and are not now. Cause, the recovery routes ruled out, and the
+precondition now encoded in the script (it aborts, naming the entries, unless
+`~/.Trash` holds nothing but the probe's own items) are in
+`INCIDENT-vm-trash-emptied.md`. The guard was then verified in both directions:
+a planted foreign entry produced a refusal, exit 1, and the entry still in the
+trash afterwards; an empty trash let the probe run and reproduce the result
+above.
 
 ### What happens to `FSMoveObjectToTrashSync`
 
