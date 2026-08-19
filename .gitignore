@@ -19,6 +19,10 @@ landing-*.png
 .backlog/
 deliverables/
 
+# Local design-tooling signal log (written by a PreToolUse hook on this
+# machine, not project content).
+.design/
+
 # Local-only PATH-shadow scan setup (the owner's machine runs the daily scan +
 # sticky banner; these are personal setup, not shipped to ai-trash users).
 scripts/ai-trash-banner.sh
