@@ -34,6 +34,8 @@ Commands:
   status                       Show summary of AI trash contents
   list                         List all items with deletion time and original path
   suggest                      Analyze trash and suggest bypass patterns
+  bypass-patterns              Show which paths skip the trash and why
+  detection                    Show which tools count as AI callers and why
   restore <name>               Restore item to its original location
   empty [--force]              Permanently delete all items
   empty --older-than <days>    Permanently delete items older than N days
@@ -300,7 +302,9 @@ cmd_suggest() {
   # Collect original paths and sizes
   local tmp_data
   tmp_data=$(mktemp)
-  trap 'rm -f "$tmp_data"' RETURN
+  # /bin/rm, not a bare `rm`: our own wrapper shadows rm on PATH and would
+  # trash this temp file instead of deleting it.
+  trap '/bin/rm -f "$tmp_data"' RETURN
 
   local total_items=0
   while IFS= read -r -d '' item; do
@@ -413,7 +417,7 @@ cmd_suggest() {
     sugg_lines+=("$(printf "  %-55s %5d  %7s   %s" "$pattern" "$cnt" "$size_str" "$example")")
   done < "$tmp_agg"
 
-  rm -f "$tmp_agg"
+  /bin/rm -f "$tmp_agg"
 
   if [[ "$has_suggestions" != true ]]; then
     echo "Analyzed $total_items item(s) in AI trash — no bypass pattern suggestions."
@@ -441,12 +445,162 @@ cmd_suggest() {
   echo "  )"
 }
 
+# ─── bypass-patterns ──────────────────────────────────────────────────
+
+# Print the effective bypass list: which paths are permanently deleted instead
+# of trashed, and which of the three config knobs put each one there.
+#
+# This is not a convenience listing. DISABLE_BUILTIN_BYPASS_PATTERNS matches
+# builtins by EXACT string, so without a way to read the live builtin list off
+# the machine, the opt-out is unusable and a typo in it fails silently. This
+# command is where you copy those strings from, and where a non-matching
+# disable entry is reported instead of being swallowed.
+cmd_bypass_patterns() {
+  local pattern disabled found
+
+  local switch="${USE_BUILTIN_BYPASS_PATTERNS:-true}"
+  if [[ "$switch" != true ]]; then
+    echo "Builtin patterns: DISABLED (USE_BUILTIN_BYPASS_PATTERNS=$switch in $CONFIG_FILE)"
+    if [[ "$switch" != false ]]; then
+      echo "  NOTE: '$switch' is not a recognised value. Only 'true' enables the builtin"
+      echo "  list; anything else leaves it off, because bypassing permanently deletes."
+      echo "  Set USE_BUILTIN_BYPASS_PATTERNS=true to get the shipped patterns back."
+    fi
+  else
+    echo "Builtin patterns (${#_BUILTIN_BYPASS_PATTERNS[@]} shipped, updated on every upgrade):"
+    for pattern in "${_BUILTIN_BYPASS_PATTERNS[@]:-}"; do
+      [[ -z "$pattern" ]] && continue
+      found=false
+      for disabled in "${DISABLE_BUILTIN_BYPASS_PATTERNS[@]:-}"; do
+        if [[ "$pattern" == "$disabled" ]]; then found=true; break; fi
+      done
+      if [[ "$found" == true ]]; then
+        printf '  %-56s [disabled by your config]\n' "$pattern"
+      else
+        printf '  %s\n' "$pattern"
+      fi
+    done
+  fi
+
+  echo ""
+  if [[ "${#BYPASS_TRASH_PATTERNS[@]}" -eq 0 ]]; then
+    echo "Your additions (BYPASS_TRASH_PATTERNS in $CONFIG_FILE): none"
+  else
+    echo "Your additions (BYPASS_TRASH_PATTERNS in $CONFIG_FILE):"
+    for pattern in "${BYPASS_TRASH_PATTERNS[@]}"; do
+      printf '  %s\n' "$pattern"
+    done
+  fi
+
+  # An opt-out that matches no builtin does nothing at all. Report it rather
+  # than letting a typo look like a working setting.
+  local -a orphans=()
+  for disabled in "${DISABLE_BUILTIN_BYPASS_PATTERNS[@]:-}"; do
+    [[ -z "$disabled" ]] && continue
+    found=false
+    for pattern in "${_BUILTIN_BYPASS_PATTERNS[@]:-}"; do
+      if [[ "$pattern" == "$disabled" ]]; then found=true; break; fi
+    done
+    [[ "$found" == false ]] && orphans+=("$disabled")
+  done
+  if [[ "${#orphans[@]}" -gt 0 ]]; then
+    echo ""
+    echo "WARNING: DISABLE_BUILTIN_BYPASS_PATTERNS entries matching no builtin pattern."
+    echo "These have no effect. The match is an exact string, not a regex:"
+    for disabled in "${orphans[@]}"; do
+      printf '  %s\n' "$disabled"
+    done
+  fi
+
+  echo ""
+  echo "Effective: ${#_AIT_EFFECTIVE_BYPASS_PATTERNS[@]} pattern(s). Paths matching any of them are"
+  echo "permanently deleted instead of moved to the trash."
+}
+
+# ─── detection ────────────────────────────────────────────────────────
+
+# Print the effective AI-detection lists and where each entry came from.
+#
+# Counterpart to cmd_bypass_patterns, and load-bearing for the same reason:
+# DISABLE_BUILTIN_AI_DETECTION matches shipped entries by exact string, so this
+# is where those strings are read off the machine, and where an entry that
+# matches nothing is reported instead of quietly doing nothing.
+cmd_detection() {
+  local entry disabled found
+  local -a all_builtins=(
+    "${_BUILTIN_AI_ENV_VARS[@]:-}"
+    "${_BUILTIN_AI_PROCESSES[@]:-}"
+    "${_BUILTIN_AI_PROCESS_ARGS[@]:-}"
+  )
+
+  # _list_group <heading> <entry>...
+  _list_group() {
+    local heading="$1"; shift
+    echo "$heading"
+    if [[ "$#" -eq 0 ]]; then
+      echo "  (none)"
+      return
+    fi
+    for entry in "$@"; do
+      [[ -z "$entry" ]] && continue
+      found=false
+      for disabled in "${DISABLE_BUILTIN_AI_DETECTION[@]:-}"; do
+        if [[ "$entry" == "$disabled" ]]; then found=true; break; fi
+      done
+      if [[ "$found" == true ]]; then
+        printf '  %-40s [disabled by your config]\n' "$entry"
+      else
+        printf '  %s\n' "$entry"
+      fi
+    done
+  }
+
+  if [[ "${USE_BUILTIN_AI_DETECTION:-true}" == false ]]; then
+    echo "Shipped detection lists: DISABLED (USE_BUILTIN_AI_DETECTION=false in $CONFIG_FILE)"
+    echo "Only your own entries below are matched."
+  else
+    echo "Shipped detection lists (updated on every upgrade):"
+    echo ""
+    _list_group "Environment variables:" "${_BUILTIN_AI_ENV_VARS[@]:-}"
+    echo ""
+    _list_group "Process names:" "${_BUILTIN_AI_PROCESSES[@]:-}"
+    echo ""
+    _list_group "Command-line substrings:" "${_BUILTIN_AI_PROCESS_ARGS[@]:-}"
+  fi
+
+  # An opt-out matching nothing does nothing. Say so rather than swallow it.
+  local -a orphans=()
+  for disabled in "${DISABLE_BUILTIN_AI_DETECTION[@]:-}"; do
+    [[ -z "$disabled" ]] && continue
+    found=false
+    for entry in "${all_builtins[@]:-}"; do
+      if [[ "$entry" == "$disabled" ]]; then found=true; break; fi
+    done
+    [[ "$found" == false ]] && orphans+=("$disabled")
+  done
+  if [[ "${#orphans[@]}" -gt 0 ]]; then
+    echo ""
+    echo "WARNING: DISABLE_BUILTIN_AI_DETECTION entries matching no shipped entry."
+    echo "These have no effect. The match is an exact string, not a regex:"
+    for disabled in "${orphans[@]}"; do
+      printf '  %s\n' "$disabled"
+    done
+  fi
+
+  echo ""
+  echo "Effective: ${#AI_ENV_VARS[@]} env var(s), ${#AI_PROCESSES[@]} process name(s),"
+  echo "${#AI_PROCESS_ARGS[@]} command-line pattern(s). A delete from any match is"
+  echo "intercepted and made recoverable instead of being permanent."
+}
+
 # ─── dispatch ──────────────────────────────────────────────────────────
 
 case "${1:-}" in
   status)            cmd_status ;;
   list)              cmd_list ;;
   suggest)           cmd_suggest ;;
+  bypass-patterns)   cmd_bypass_patterns ;;
+  detection)         cmd_detection ;;
   restore)    shift; cmd_restore "$@" ;;
   empty)      shift; cmd_empty "$@" ;;
   version|--version|-V) echo "ai-trash 1.6.24" ;;

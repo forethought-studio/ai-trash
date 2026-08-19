@@ -9,7 +9,9 @@ _SRC="${BASH_SOURCE[0]:-}"
 if [[ -z "$_SRC" || "$_SRC" == "/dev/stdin" ]]; then
   echo "Downloading ai-trash..."
   _TMP=$(mktemp -d)
-  trap 'rm -rf "$_TMP"' EXIT
+  # /bin/rm, not a bare `rm`: on a re-install our own wrapper is already on
+  # PATH and would trash the download directory instead of deleting it.
+  trap '/bin/rm -rf "$_TMP"' EXIT
   curl -fsSL https://github.com/forethought-studio/ai-trash/archive/refs/heads/main.tar.gz \
     | tar -xz -C "$_TMP" --strip-components=1
   exec bash "$_TMP/install.sh"
@@ -113,12 +115,17 @@ CONFIG_DIR="$HOME/.config/ai-trash"
 CONFIG_FILE="$CONFIG_DIR/config.sh"
 
 mkdir -p "$CONFIG_DIR"
+# Your config is never overwritten, and no longer needs to be: the shipped
+# bypass patterns and AI-detection lists live in ai-trash-lib.sh (replaced above
+# on every upgrade), not in this template, so new defaults reach existing
+# installs without the installer having to merge anything into a file you own.
 if [[ ! -f "$CONFIG_FILE" ]]; then
   cp "$SCRIPT_DIR/config.default.sh" "$CONFIG_FILE"
   echo "  config installed → $CONFIG_FILE"
   echo "  (edit this file to customise which AI tools are protected)"
 else
-  echo "  config already exists, skipping → $CONFIG_FILE"
+  echo "  config already exists, left untouched → $CONFIG_FILE"
+  echo "  (shipped defaults still updated; see: ai-trash bypass-patterns / ai-trash detection)"
 fi
 
 # ─── Cleanup scheduler ─────────────────────────────────────────────────
@@ -196,12 +203,12 @@ for c in "${CANDIDATES[@]}"; do
   if [[ -f "$c/rm_wrapper.sh" ]] && grep -q "ai-trash" "$c/rm_wrapper.sh" 2>/dev/null; then
     echo "  removing stale install from $c"
     for f in ai-trash-lib.sh rm_wrapper.sh git_wrapper.sh find_wrapper.sh rsync_wrapper.sh ai-trash ai-trash-cleanup check-path-shadows.sh; do
-      sudo rm -f "$c/$f"
+      sudo /bin/rm -f "$c/$f"
     done
     for cmd in rm rmdir unlink git find rsync; do
       target=$(readlink "$c/$cmd" 2>/dev/null || true)
       if [[ "$target" == *_wrapper* ]]; then
-        sudo rm -f "$c/$cmd"
+        sudo /bin/rm -f "$c/$cmd"
       fi
     done
   fi

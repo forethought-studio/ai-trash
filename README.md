@@ -20,7 +20,7 @@ AI coding agents delete the wrong file more often than you'd expect. By the time
 - Each trashed item keeps its original filename. Name collisions are handled Finder-style: `file (2).txt`, `file (3).txt`.
 - Metadata is stored as extended attributes on the file itself: original path, deletion time (UTC), who deleted it, and original size.
 - AI-originated `find -delete`, destructive `git` commands, and local `rsync --delete` are also protected. Rsync protection uses rsync backups, so destination files that are deleted or replaced by the sync can be restored.
-- A LaunchAgent runs every 6 hours and permanently purges items older than `RETENTION_DAYS` (default: 30 days, configurable in `~/.config/ai-trash/config.sh`).
+- A LaunchAgent runs every 6 hours and permanently purges items older than `RETENTION_DAYS` (default: 30 days, configurable in `~/.config/ai-trash/config.sh`). It then evicts the oldest items until the trash is under both `MAX_TRASH_SIZE_GB` (default: 5% of the disk, capped at 50 GiB) and `MAX_TRASH_ITEMS` (default: 25,000 items). The item cap matters on its own: Finder re-enumerates `~/.Trash` entry by entry to keep its size and Dock badge current, so a trash full of tiny agent-generated files can pin a CPU core long before it is anywhere near the size cap. Items trashed within the last `SIZE_EVICTION_GRACE_HOURS` (default: 24) are exempt from cap eviction, so nothing is destroyed before you have had a chance to restore it.
 - **Daemon-safe**: if `$HOME` is unset or points to `/var/root` (system launchd daemons), the wrapper falls through to real `rm`. Non-interactive contexts (pipes, cron) never hang on `-i`/`-I` prompts.
 
 ## Protection modes
@@ -142,7 +142,35 @@ Get-Content "$env:USERPROFILE\.config\ai-trash\manifest.json" | ConvertFrom-Json
 
 The config file at `~/.config/ai-trash/config.sh` (installed automatically) controls the protection mode and which AI tools are recognised. It's well-commented — open it and everything is explained inline.
 
-To add a tool not on the default list, find its process name with `ps aux | grep <toolname>` and add it to `AI_PROCESSES` or `AI_PROCESS_ARGS` in the config.
+### Which tools count as AI
+
+Three shipped lists decide whether a caller is an AI tool: environment variables (`AI_ENV_VARS`), process names (`AI_PROCESSES`), and command-line substrings (`AI_PROCESS_ARGS`). Run `ai-trash detection` to see them.
+
+Like the bypass patterns, they live in `ai-trash-lib.sh` rather than your config, so a tool added in a new release starts being recognised as soon as you upgrade. Your config holds only your own entries:
+
+| Setting | Purpose |
+| --- | --- |
+| `AI_ENV_VARS`, `AI_PROCESSES`, `AI_PROCESS_ARGS` | Tools of your own, merged on top of the shipped lists. To add one, find its process name with `ps aux \| grep <toolname>`, or open a terminal inside it and run `echo $TERM_PROGRAM`. |
+| `DISABLE_BUILTIN_AI_DETECTION` | Shipped entries to stop matching, by exact string. Useful for generic names: ai-trash ships `q` for Amazon Q Developer CLI, which also matches any other `q` on your PATH. |
+| `USE_BUILTIN_AI_DETECTION=false` | Detect only the tools you listed yourself. |
+
+Detection and bypass fail in opposite directions on purpose. An unreadable `USE_BUILTIN_AI_DETECTION` leaves detection **on**, and an unreadable `USE_BUILTIN_BYPASS_PATTERNS` leaves bypassing **off** -- because detecting a tool adds protection while bypassing a path deletes permanently. Both rules keep your file.
+
+### Bypass patterns
+
+Some paths have no recovery value and would only bloat the trash: git lock files, `node_modules`, `DerivedData`, `__pycache__`, and the scratch state AI tools write and delete constantly. On one profiled machine a single AI tool's ephemeral snapshots were 90.4% of everything trashed in a retention window. ai-trash ships about eighty patterns for these; a matching path is permanently deleted instead of trashed.
+
+Run `ai-trash bypass-patterns` to see the live list and where each entry came from.
+
+The shipped list lives in `ai-trash-lib.sh`, not in your config file, so upgrading gets you new defaults automatically. Your config is never overwritten, and holds only your own choices:
+
+| Setting | Purpose |
+| --- | --- |
+| `BYPASS_TRASH_PATTERNS` | Extra patterns of your own, on top of the shipped ones. `ai-trash suggest` reads your actual trash and prints ready-to-paste entries. |
+| `DISABLE_BUILTIN_BYPASS_PATTERNS` | Shipped patterns to turn off, by exact string copied from `ai-trash bypass-patterns`. |
+| `USE_BUILTIN_BYPASS_PATTERNS=false` | Ignore the shipped list entirely. With no additions of your own, nothing is ever permanently deleted. |
+
+Patterns are extended regular expressions matched against the file's resolved absolute path.
 
 
 ## Uninstall

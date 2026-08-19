@@ -24,7 +24,7 @@ CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/ai-trash/config.sh"
 # See config.default.sh in the repo for full documentation and comments.
 MODE=selective
 
-AI_ENV_VARS=(
+_BUILTIN_AI_ENV_VARS=(
   "TERM_PROGRAM=cursor"       # Cursor IDE
   "TERM_PROGRAM=vscode"       # VS Code (Copilot, Cline, Continue, Roo, etc.)
   "TERM_PROGRAM=windsurf"     # Windsurf (formerly Codeium)
@@ -34,7 +34,7 @@ AI_ENV_VARS=(
   "CODEX_SANDBOX=seatbelt"    # OpenAI Codex CLI (set in every sandboxed subprocess on macOS)
 )
 
-AI_PROCESSES=(
+_BUILTIN_AI_PROCESSES=(
   claude      # Claude Code (Anthropic)
   gemini      # Gemini CLI (Google) — standalone binary
   goose       # Goose (Block)
@@ -50,7 +50,7 @@ AI_PROCESSES=(
   qodo        # Qodo Command — workflow automation agent
 )
 
-AI_PROCESS_ARGS=(
+_BUILTIN_AI_PROCESS_ARGS=(
   "codex"       # OpenAI Codex CLI   (runs as: node .../codex/...)
   "aider"       # Aider              (runs as: python3 .../aider/...)
   "gemini-cli"  # Gemini CLI via npx (runs as: node .../@google/gemini-cli/...)
@@ -59,19 +59,391 @@ AI_PROCESS_ARGS=(
   "opencode"    # OpenCode           (also matched by AI_PROCESSES above)
 )
 
+# ─── AI detection: builtins + your additions ───────────────────────────
+# Same layering, and for the same reason, as the bypass patterns below: the
+# three lists above ship in this file, which every upgrade replaces, instead of
+# in config.default.sh, which the installer refuses to overwrite once a config
+# exists.
+#
+# This half is the one that actually loses files. Before the split, a config
+# written by an older release carried its own full AI_ENV_VARS=(...) assignment,
+# which REPLACED the shipped list rather than adding to it. A machine whose
+# config predates the CLAUDECODE=1 entry therefore stopped recognising Claude
+# Code entirely: its deletes were never intercepted and went straight to
+# permanent removal. Same for every AI tool added to AI_PROCESSES since.
+#
+# Effective list = builtins (unless disabled) - DISABLE_BUILTIN_AI_DETECTION
+#                                             + your additions
+
+# Your ADDITIONS, set in ~/.config/ai-trash/config.sh. A config written by an
+# older release assigns these with its own inherited copy of the shipped lists;
+# that keeps working, the entries simply repeat what the builtins already cover.
+AI_ENV_VARS=()
+AI_PROCESSES=()
+AI_PROCESS_ARGS=()
+
+# Turn individual builtin detection entries off, by EXACT string, across all
+# three lists. The generic names are what this is for: "q" is Amazon Q Developer
+# CLI to ai-trash and a different tool entirely to anyone else who has put a `q`
+# on their PATH, and only the user can say which they meant.
+DISABLE_BUILTIN_AI_DETECTION=()
+
+# Master switch for the builtin detection lists.
+#
+# Compared with != false, the OPPOSITE of USE_BUILTIN_BYPASS_PATTERNS, and the
+# asymmetry is deliberate. Detecting an AI tool ADDS protection, so an
+# unreadable value must leave it ON; a bypass pattern AUTHORISES A PERMANENT
+# DELETE, so an unreadable value must leave that OFF. Both directions fail
+# toward keeping the user's file.
+USE_BUILTIN_AI_DETECTION=${USE_BUILTIN_AI_DETECTION:-true}
+
+# Merge helpers. macOS ships bash 3.2, which has no namerefs, so the arrays are
+# passed as positional arguments and accumulated into _AIT_MERGE_RESULT. Both
+# helpers drop empty entries: an empty AI_ENV_VARS entry would expand to
+# ${!""} in the detection loop, and an empty AI_PROCESSES entry would become an
+# empty alternative in the pipe-joined pattern awk splits.
+_ait_merge_builtins() {
+  local item disabled skip
+  for item in "$@"; do
+    [[ -z "$item" ]] && continue
+    skip=false
+    for disabled in "${DISABLE_BUILTIN_AI_DETECTION[@]:-}"; do
+      if [[ "$item" == "$disabled" ]]; then skip=true; break; fi
+    done
+    [[ "$skip" == true ]] && continue
+    _AIT_MERGE_RESULT+=("$item")
+  done
+}
+
+_ait_merge_user() {
+  local item
+  for item in "$@"; do
+    [[ -z "$item" ]] && continue
+    _AIT_MERGE_RESULT+=("$item")
+  done
+}
+
+# Collapse builtins + additions into the three arrays _is_ai_process reads.
+# Called once, immediately after the user config is sourced.
+_ait_build_effective_ai_detection() {
+  local use="${USE_BUILTIN_AI_DETECTION:-true}"
+
+  _AIT_MERGE_RESULT=()
+  [[ "$use" != false ]] && _ait_merge_builtins "${_BUILTIN_AI_ENV_VARS[@]:-}"
+  _ait_merge_user "${AI_ENV_VARS[@]:-}"
+  if [[ "${#_AIT_MERGE_RESULT[@]}" -gt 0 ]]; then
+    AI_ENV_VARS=("${_AIT_MERGE_RESULT[@]}")
+  else
+    AI_ENV_VARS=()
+  fi
+
+  _AIT_MERGE_RESULT=()
+  [[ "$use" != false ]] && _ait_merge_builtins "${_BUILTIN_AI_PROCESSES[@]:-}"
+  _ait_merge_user "${AI_PROCESSES[@]:-}"
+  if [[ "${#_AIT_MERGE_RESULT[@]}" -gt 0 ]]; then
+    AI_PROCESSES=("${_AIT_MERGE_RESULT[@]}")
+  else
+    AI_PROCESSES=()
+  fi
+
+  _AIT_MERGE_RESULT=()
+  [[ "$use" != false ]] && _ait_merge_builtins "${_BUILTIN_AI_PROCESS_ARGS[@]:-}"
+  _ait_merge_user "${AI_PROCESS_ARGS[@]:-}"
+  if [[ "${#_AIT_MERGE_RESULT[@]}" -gt 0 ]]; then
+    AI_PROCESS_ARGS=("${_AIT_MERGE_RESULT[@]}")
+  else
+    AI_PROCESS_ARGS=()
+  fi
+}
+
 # New wrapper toggles — default to true, respect env overrides
 GIT_PROTECTION=${GIT_PROTECTION:-true}
 FIND_PROTECTION=${FIND_PROTECTION:-true}
 RSYNC_PROTECTION=${RSYNC_PROTECTION:-true}
 RSYNC_PROTECT_ALL_LOCAL=${RSYNC_PROTECT_ALL_LOCAL:-false}
 
-# Bypass patterns — empty by default; populated from user config
+# ─── Bypass patterns ───────────────────────────────────────────────────
+# Three knobs, one effective list. The effective set is:
+#
+#     builtins (unless disabled) - DISABLE_BUILTIN_BYPASS_PATTERNS
+#                                + BYPASS_TRASH_PATTERNS
+#
+# WHY THE SHIPPED DEFAULTS LIVE HERE AND NOT IN config.default.sh:
+# install.sh writes ~/.config/ai-trash/config.sh only when that file does not
+# already exist, and leaves it untouched otherwise, because a user's config is
+# theirs to own. Anything shipped inside that template therefore reaches new
+# installs only, and freezes at v1 on every machine that has ever upgraded. Two
+# releases' worth of new defaults reached nobody that way, including the Claude
+# Code snapshot pattern below that accounted for 90.4% of trashed items on a
+# measured host. Keeping the defaults in a file the installer DOES overwrite
+# makes "a new shipped default never reaches existing users" impossible by
+# construction, rather than something an upgrade-time merge heuristic has to
+# re-derive correctly on every release.
+#
+# The config file is a persisted-format contract, so this stays additive: a
+# config written by any earlier version still parses, and its full inherited
+# copy of the old defaults simply matches redundantly alongside the builtins.
+
+# _BUILTIN_BYPASS_PATTERNS - shipped defaults. Files whose resolved absolute
+# path matches any entry are permanently deleted (/bin/rm) instead of going to
+# ai-trash, because they have zero recovery value. Entries are extended regular
+# expressions (ERE), matched with bash =~; an entry without ^ or $ matches
+# anywhere in the path. Do not edit this array to customise: it is overwritten
+# on every upgrade. Use the three config knobs below instead.
+_BUILTIN_BYPASS_PATTERNS=(
+  # macOS temp dirs - mktemp outputs; cleaned by OS on reboot
+  "^/private/var/folders/"
+  "^/var/folders/"
+  "^/private/tmp/"
+  "^/tmp/"
+
+  # macOS system Trash - mktemp-style ephemeral files that ended up in ~/.Trash
+  # (common in safe mode when tools delete temp files). Never worth recovering.
+  "$HOME/\.Trash/tmp\."
+
+  # Git transient lock and state files - contain no data, never worth restoring
+  "/\.git/index\.lock$"
+  "/\.git/MERGE_HEAD$"
+  "/\.git/CHERRY_PICK_HEAD$"
+  "/\.git/REVERT_HEAD$"
+  "/\.git/BISECT_HEAD$"
+  "/\.git/ORIG_HEAD$"
+
+  # ── AI coding tool ephemeral state ──────────────────────────────────
+  # These are the highest-volume deletions on a machine that runs AI coding
+  # agents all day, which is exactly the machine ai-trash is installed on.
+  # Without these patterns the trash fills with tool bookkeeping rather than
+  # the user work it exists to protect.
+
+  # Claude Code's pre-Bash git snapshot: one written and deleted per Bash
+  # tool call, per session. On a measured machine these were 66,098 of
+  # 73,121 trashed items (90.4%) over a single retention window. Pure
+  # ephemeral tool state that is never restored.
+  # The (.*/)? is load-bearing: in a linked worktree or a submodule these
+  # live under .git/worktrees/<name>/ or .git/modules/<name>/, not directly
+  # under .git/. Scoping to .git/ keeps a user file that happens to share
+  # the name out of the bypass.
+  "/\.git/(.*/)?\.claude-bash-pre-[0-9a-f-]+\.snapshot$"
+
+  # Aider repo-map cache, rebuilt from source on the next aider run
+  "/\.aider\.tags\.cache\.v[0-9]+(/|$)"
+
+  # Claude desktop app Electron caches, rebuilt on next launch.
+  # "Code Cache" needs its own entry: its path does not contain "/Claude/Cache".
+  "$HOME/Library/Application Support/Claude/Cache"
+  "$HOME/Library/Application Support/Claude/Code Cache"
+
+  # pyenv shims - auto-generated by pyenv; recreated instantly with pyenv rehash
+  "/\.pyenv/shims/"
+
+  # ssh-copy-id temp files - ephemeral, created and discarded by the command
+  "/\.ssh/ssh-copy-id\."
+
+  # node_modules - reinstalled instantly with npm/yarn/bun install; never worth recovering
+  "/node_modules/"
+
+  # Playwright browser binaries (chromium, webkit, firefox) - large, auto-downloaded on demand
+  "/ms-playwright/"
+
+  # Gradle daemon - process lock/state files, auto-recreated on next build
+  "/\.gradle/daemon"
+
+  # macOS .framework bundles - system/Xcode artifacts, large, managed by the OS
+  "\.framework(/|$)"
+
+  # Xcode provisioning profiles - code-signing artifacts, auto-managed by Xcode
+  "\.provisionprofile$"
+
+  # Python bytecode - auto-generated, recreated on import
+  "__pycache__(/|$)"
+  "\.pyc$"
+
+  # macOS Finder metadata - auto-recreated when opening any folder
+  "\.DS_Store$"
+
+  # Xcode build intermediates and test result bundles
+  "/DerivedData/"
+  "\.xcresult(/|$)"
+
+  # React Native / Expo iOS build output, regenerated on next build
+  "/ios/build(/|$)"
+
+  # Gradle build output (Android), regenerated on next build
+  "/android/app/build(/|$)"
+  "/build/android(/|$)"
+
+  # Mobile test/build artifacts that are regenerated by local verification runs
+  "/build/PrefixCheckDD(/|$)"
+  "/\.e2e-logs/detox-[^/]*\.log$"
+  "/artifacts/ios\.sim\.debug\."
+  "/tmp/jest(/|$)"
+  "/thumbcache(/|$)"
+
+  # Xcode "do not index" caches: ModuleCache.noindex, Index.noindex,
+  # CompilationCache.noindex, SDKStatCaches.noindex. Pure caches, regenerated
+  # on next build. Catches DerivedData-shaped trees with non-standard names.
+  "\.noindex(/|$)"
+
+  # Java compiled bytecode - always regenerated from .java source
+  "\.class$"
+
+  # Python tool caches and packaging metadata
+  "/\.pytest_cache(/|$)"
+  "/\.mypy_cache(/|$)"
+  "\.egg-info(/|$)"
+  "/\.tox(/|$)"
+  "/\.nox(/|$)"
+
+  # CocoaPods dependencies - regenerated by pod install
+  "/Pods(/|$)"
+
+  # CocoaPods global cache - auto-downloaded on demand by pod install
+  "/Library/Caches/CocoaPods/"
+
+  # Vim swap files - ephemeral editor state
+  "\.swp$"
+  "\.swo$"
+
+  # Ruby Bundler - regenerated by bundle install
+  "/vendor/bundle/"
+
+  # Autoconf/configure artifacts - created and deleted thousands of times per
+  # ./configure run. Ephemeral test programs, objects, and temp files with zero
+  # recovery value.
+  "/conftest$"
+  "/conftest\."
+  "/conftest[0-9]"
+  "/confdefs\.h$"
+  "/confcache$"
+  "/confinc\."
+  "/confmf\."
+  "/conf[0-9][0-9]*"
+  "/libconftest\."
+  "/conftstm\."
+
+  # Default compiler output, never intentionally named
+  "/a\.out$"
+
+  # Swift Package Manager build output, regenerated by swift build
+  "\.build(/|$)"
+
+  # JS framework build/cache dirs, regenerated by dev/build commands
+  "/\.next(/|$)"
+  "/\.nuxt(/|$)"
+  "/\.parcel-cache(/|$)"
+  "/\.svelte-kit(/|$)"
+  "/\.angular/cache(/|$)"
+  "/\.turbo(/|$)"
+
+  # Flutter/Dart generated build state, regenerated by pub get / flutter build
+  "/\.dart_tool(/|$)"
+
+  # Terraform provider/module cache, regenerated by terraform init
+  "/\.terraform(/|$)"
+
+  # CMake build artifacts, regenerated by cmake configure/build
+  "/cmake-build-[^/]+(/|$)"
+  "/CMakeFiles(/|$)"
+  "/CMakeCache\.txt$"
+
+  # Bazel build outputs, regenerated by bazel build/test
+  "/bazel-(bin|out|testlogs)(/|$)"
+
+  # Buck/Buck2 build output, regenerated by buck build
+  "/buck-out(/|$)"
+
+  # Android NDK/Gradle native CMake intermediates, regenerated by Gradle
+  "/\.cxx(/|$)"
+
+  # Gradle project-local caches (excludes wrapper config/scripts)
+  "/\.gradle/caches(/|$)"
+  "/\.gradle/buildOutputCleanup(/|$)"
+  "/\.gradle/configuration-cache(/|$)"
+
+  # Gradle buildSrc compiled output, regenerated by Gradle
+  "/buildSrc/build(/|$)"
+
+  # Maven wrapper downloaded distributions, regenerated by mvnw
+  "/\.mvn/wrapper/dists(/|$)"
+
+  # Serverless Framework deployment artifacts, regenerated by sls package
+  "/\.serverless(/|$)"
+
+  # AWS SAM build artifacts, regenerated by sam build
+  "/\.aws-sam(/|$)"
+
+  # AWS CDK synthesized output, regenerated by cdk synth
+  "/cdk\.out(/|$)"
+
+  # Sass compiler cache, regenerated on build
+  "/\.sass-cache(/|$)"
+
+  # NYC/Istanbul coverage data, regenerated by test runs
+  "/\.nyc_output(/|$)"
+)
+
+# ─── User overrides (set in ~/.config/ai-trash/config.sh) ──────────────
+
+# BYPASS_TRASH_PATTERNS - your ADDITIONS to the builtin list. Same ERE syntax.
+# `ai-trash suggest` prints ready-to-paste entries for this array. A config
+# written before the builtins existed holds a full copy of the old defaults
+# here; that keeps working, it just matches the same paths twice.
 BYPASS_TRASH_PATTERNS=()
 
-# Load user config — sourced so it overrides the defaults above.
+# DISABLE_BUILTIN_BYPASS_PATTERNS - turn individual builtins off, by EXACT
+# pattern string. Copy the string to disable from `ai-trash bypass-patterns`,
+# which prints the effective list and flags entries here that match no builtin.
+DISABLE_BUILTIN_BYPASS_PATTERNS=()
+
+# USE_BUILTIN_BYPASS_PATTERNS - master switch. Set to false to ignore the whole
+# builtin list and bypass only what BYPASS_TRASH_PATTERNS names. This preserves
+# the pre-builtins capability of running with no bypass patterns at all, which
+# an exact-string disable list cannot express.
+#
+# Compared with == true, the same idiom the GIT_PROTECTION / FIND_PROTECTION /
+# RSYNC_PROTECTION toggles use, so an unrecognised value ("TRUE", "yes", a typo)
+# leaves the builtins OFF rather than on. Bypassing means PERMANENT deletion, so
+# a config in an unknown state must not authorise it; the cost of the safe
+# direction is a fuller trash, which is recoverable, and `ai-trash
+# bypass-patterns` reports the unrecognised value rather than swallowing it.
+# An ABSENT key still means on, which is what makes pre-builtin configs work.
+USE_BUILTIN_BYPASS_PATTERNS=${USE_BUILTIN_BYPASS_PATTERNS:-true}
+
+# _ait_build_effective_bypass_patterns - collapse the three knobs above into the
+# single list _matches_bypass_pattern walks. Called once, immediately after the
+# user config is sourced, so the per-delete hot path never re-derives it.
+_ait_build_effective_bypass_patterns() {
+  local pattern disabled skip
+  _AIT_EFFECTIVE_BYPASS_PATTERNS=()
+
+  if [[ "${USE_BUILTIN_BYPASS_PATTERNS:-true}" == true ]]; then
+    for pattern in "${_BUILTIN_BYPASS_PATTERNS[@]:-}"; do
+      [[ -z "$pattern" ]] && continue
+      skip=false
+      for disabled in "${DISABLE_BUILTIN_BYPASS_PATTERNS[@]:-}"; do
+        if [[ "$pattern" == "$disabled" ]]; then skip=true; break; fi
+      done
+      [[ "$skip" == true ]] && continue
+      _AIT_EFFECTIVE_BYPASS_PATTERNS+=("$pattern")
+    done
+  fi
+
+  for pattern in "${BYPASS_TRASH_PATTERNS[@]:-}"; do
+    [[ -z "$pattern" ]] && continue
+    _AIT_EFFECTIVE_BYPASS_PATTERNS+=("$pattern")
+  done
+}
+
+# Load user config - sourced so it overrides the defaults above.
 # To customise, edit: ~/.config/ai-trash/config.sh
 # shellcheck source=/dev/null
 [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
+
+# Must run AFTER the config source: the config is what supplies the additions,
+# the disable list, and the master switch.
+_ait_build_effective_bypass_patterns
+_ait_build_effective_ai_detection
+
 
 # ─── Real-binary resolution + recursion guard (shared across all wrappers) ──
 # Single source of truth for two things that used to be copy-pasted (and had
@@ -151,7 +523,8 @@ _ait_recursion_guard() {
 _is_ai_process() {
   # Tier 1: environment variable check — instant, no process lookup needed
   local var val env_check
-  for env_check in "${AI_ENV_VARS[@]}"; do
+  for env_check in "${AI_ENV_VARS[@]:-}"; do
+    [[ -z "$env_check" ]] && continue
     var="${env_check%%=*}"
     val="${env_check#*=}"
     [[ "${!var:-}" == "$val" ]] && return 0
@@ -221,7 +594,8 @@ _detect_ai_process_command() {
   # Check env-var tier first — if matched, the parent is the calling shell,
   # so walk up to grandparent for a more useful label.
   local var val env_check
-  for env_check in "${AI_ENV_VARS[@]}"; do
+  for env_check in "${AI_ENV_VARS[@]:-}"; do
+    [[ -z "$env_check" ]] && continue
     var="${env_check%%=*}"
     val="${env_check#*=}"
     if [[ "${!var:-}" == "$val" ]]; then
@@ -323,12 +697,16 @@ _build_process_chain() {
 }
 
 # ─── Bypass pattern check ──────────────────────────────────────────────
-# Returns 0 if the resolved absolute path matches any BYPASS_TRASH_PATTERNS entry.
+# Returns 0 if the resolved absolute path matches any effective bypass entry.
+# The effective list is built once at load time by
+# _ait_build_effective_bypass_patterns from _BUILTIN_BYPASS_PATTERNS,
+# DISABLE_BUILTIN_BYPASS_PATTERNS and the user's BYPASS_TRASH_PATTERNS; reading
+# it here rather than re-deriving it keeps the per-delete hot path a single loop.
 # Patterns are ERE matched with bash =~. $HOME is already expanded at config
 # source time when patterns are written with double-quoted "$HOME/..." syntax.
 _matches_bypass_pattern() {
   local abs="$1" pattern
-  for pattern in "${BYPASS_TRASH_PATTERNS[@]:-}"; do
+  for pattern in "${_AIT_EFFECTIVE_BYPASS_PATTERNS[@]:-}"; do
     [[ -z "$pattern" ]] && continue
     [[ "$abs" =~ $pattern ]] && return 0
   done

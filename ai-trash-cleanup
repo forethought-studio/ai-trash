@@ -1,7 +1,7 @@
 #!/bin/bash
 # ai-trash-cleanup – purge ai-trash entries older than RETENTION_DAYS, then
-# enforce MAX_TRASH_SIZE_GB by evicting the oldest items until the total
-# ai-trash footprint is under the cap.
+# enforce MAX_TRASH_SIZE_GB and MAX_TRASH_ITEMS by evicting the oldest items
+# until the ai-trash footprint is under both caps.
 
 PLATFORM=$(uname -s)
 
@@ -17,7 +17,8 @@ _AI_TRASH_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ai-trash-lib.sh"
 CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/ai-trash/config.sh"
 RETENTION_DAYS=30
 MAX_TRASH_SIZE_GB=""           # empty = auto (5% of disk, capped at 50 GiB); 0 = disabled
-SIZE_EVICTION_GRACE_HOURS=24   # recent items exempt from size-cap eviction
+MAX_TRASH_ITEMS=""             # empty = auto (see AUTO_MAX_ITEMS below); 0 = disabled
+SIZE_EVICTION_GRACE_HOURS=24   # recent items exempt from cap eviction
 [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
 
 # Sanitize grace value: accept non-negative integers only; fall back to 24 otherwise.
@@ -30,10 +31,16 @@ SIZE_EVICTION_GRACE_HOURS=24   # recent items exempt from size-cap eviction
 _mtime_arg=$(( RETENTION_DAYS > 0 ? RETENTION_DAYS - 1 : 0 ))
 
 if [[ "$PLATFORM" == "Darwin" ]]; then
-  # Purge xattr-tagged items in ~/.Trash/ older than RETENTION_DAYS days
+  # Purge xattr-tagged items in ~/.Trash/ older than RETENTION_DAYS days.
+  # -xattrname does the tag match inside find, so selecting ai-trash's own
+  # entries costs nothing; forking xattr(1) once per entry cost 30 ms each on
+  # a host whose EndpointSecurity client authorizes every exec, and ~/.Trash
+  # on the machine this cap exists for held 73,121 of them.
   while IFS= read -r -d '' item; do
-    xattr -p com.ai-trash.original-path "$item" >/dev/null 2>&1 && _remove_trash_item "$item"
-  done < <(find "$HOME/.Trash" -maxdepth 1 -mindepth 1 -mtime +"$_mtime_arg" -print0 2>/dev/null)
+    _remove_trash_item "$item"
+  done < <(find "$HOME/.Trash" -maxdepth 1 -mindepth 1 \
+             -xattrname com.ai-trash.original-path \
+             -mtime +"$_mtime_arg" -print0 2>/dev/null)
 else
   # Linux: purge items in ~/.local/share/Trash/ai-trash/ older than RETENTION_DAYS days.
   # Sidecars are excluded from the scan and removed with their item instead:
@@ -63,31 +70,73 @@ else
   fi
 fi
 
-# ─── Size-cap enforcement ──────────────────────────────────────────────
-# Determine the cap.
+# ─── Cap enforcement ───────────────────────────────────────────────────
+# ai-trash bounds the trash on three independent axes: AGE (RETENTION_DAYS,
+# purged above), total SIZE (MAX_TRASH_SIZE_GB) and ITEM COUNT
+# (MAX_TRASH_ITEMS). The item cap is not redundant with the size cap: the
+# cost that degrades a machine is per-ENTRY, not per-byte. Finder
+# continuously re-enumerates ~/.Trash to maintain its size and Dock badge,
+# one getattrlist per entry, so a trash of many tiny files is far more
+# expensive than a trash of a few large ones. A measured host reached 73,121
+# top-level entries averaging ~167 KB each and held Finder at 99-100% of a
+# core indefinitely; a 10 GiB size cap would still have permitted ~60,000 of
+# them, and an age cap bounds only count x intake rate, which on an
+# agent-driven host is orders of magnitude above the human case the 30-day
+# default was chosen for.
+#
+# Both caps are resolved BEFORE either is enforced, because they share one
+# inventory pass and one eviction loop. Neither may short-circuit the other:
+# a disabled, invalid or undeterminable size cap must still leave the item
+# cap enforced, and vice versa. An empty cap variable means "not enforced on
+# this run".
+cap_kb=""
+cap_items=""
+
+# Size cap.
 #   empty  : auto (5% of disk hosting $HOME, capped at 50 GiB)
-#   0      : disabled (skip size eviction entirely)
+#   0      : disabled
 #   N      : N GiB
 #
 # Test-only escape hatch: AI_TRASH_CAP_KB_OVERRIDE lets the test suite use a
-# tiny cap without writing gigabytes of data. Not for end-user use.
+# tiny cap without writing gigabytes of data. Not for end-user use. (The item
+# cap needs no equivalent: a handful of empty files exceeds a small
+# MAX_TRASH_ITEMS, so tests exercise it through the real config key.)
 if [[ -n "${AI_TRASH_CAP_KB_OVERRIDE:-}" ]]; then
   cap_kb=$AI_TRASH_CAP_KB_OVERRIDE
 elif [[ -z "$MAX_TRASH_SIZE_GB" ]]; then
   total_disk_kb=$(df -k "$HOME" 2>/dev/null | awk 'NR==2 {print $2}')
-  # If we can't read the disk size, skip size enforcement rather than guess.
-  [[ -z "$total_disk_kb" || "$total_disk_kb" -le 0 ]] && exit 0
-  cap_kb=$(( total_disk_kb / 20 ))                # 5%
-  ceiling_kb=$(( 50 * 1024 * 1024 ))              # 50 GiB in KiB
-  (( cap_kb > ceiling_kb )) && cap_kb=$ceiling_kb
-elif [[ "$MAX_TRASH_SIZE_GB" =~ ^0+$ ]]; then
-  exit 0
-elif [[ "$MAX_TRASH_SIZE_GB" =~ ^[0-9]+$ ]]; then
-  cap_kb=$(( MAX_TRASH_SIZE_GB * 1024 * 1024 ))
-else
-  # Invalid value: silently skip rather than risk wrong behaviour.
-  exit 0
+  # If we can't read the disk size, leave the SIZE cap unenforced rather than
+  # guess. The item cap is unaffected and still applies.
+  if [[ "$total_disk_kb" =~ ^[0-9]+$ ]] && (( total_disk_kb > 0 )); then
+    cap_kb=$(( total_disk_kb / 20 ))              # 5%
+    ceiling_kb=$(( 50 * 1024 * 1024 ))            # 50 GiB in KiB
+    (( cap_kb > ceiling_kb )) && cap_kb=$ceiling_kb
+  fi
+elif [[ "$MAX_TRASH_SIZE_GB" =~ ^[0-9]+$ ]] && (( 10#$MAX_TRASH_SIZE_GB > 0 )); then
+  cap_kb=$(( 10#$MAX_TRASH_SIZE_GB * 1024 * 1024 ))
 fi
+# 0 and any non-integer value fall through: size cap left unenforced.
+
+# Item cap.
+#   empty  : auto (AUTO_MAX_ITEMS below)
+#   0      : disabled
+#   N      : N items
+#
+# 25,000 is the auto default: roughly a third of the entry count measured to
+# pin Finder to a core, and comfortably above the ~16,500 steady state of the
+# busiest profiled agent host (about 550 genuine deletions a day held for the
+# 30-day default retention), so it acts as a safety net for an unprofiled
+# workload rather than as a de-facto shortening of RETENTION_DAYS.
+AUTO_MAX_ITEMS=25000
+if [[ -z "$MAX_TRASH_ITEMS" ]]; then
+  cap_items=$AUTO_MAX_ITEMS
+elif [[ "$MAX_TRASH_ITEMS" =~ ^[0-9]+$ ]] && (( 10#$MAX_TRASH_ITEMS > 0 )); then
+  cap_items=$(( 10#$MAX_TRASH_ITEMS ))
+fi
+# 0 and any non-integer value fall through: item cap left unenforced.
+
+# Nothing to enforce: skip the inventory pass entirely.
+[[ -z "$cap_kb" && -z "$cap_items" ]] && exit 0
 
 # Where to scan for ai-trash items.
 if [[ "$PLATFORM" == "Darwin" ]]; then
@@ -99,46 +148,96 @@ else
 fi
 [[ -d "$scan_dir" ]] || exit 0
 
-_get_mtime() {
-  if [[ "$PLATFORM" == "Darwin" ]]; then
-    stat -f "%m" "$1" 2>/dev/null
-  else
-    stat -c "%Y" "$1" 2>/dev/null
-  fi
+# Build a temp inventory of ai-trash items: <mtime>\t<size_kb>\t<path>
+#
+# Collected in three BATCHED passes and joined on the path, not with a
+# per-entry loop. The obvious loop shape forks xattr, stat and du once per
+# entry; measured on this project's own scale probe that costs 121.5 ms per
+# entry, because an EndpointSecurity client authorizes every exec. That is
+# ~50 minutes for a 25,000-item trash and ~2.5 hours for the 73,121-item one
+# the item cap exists to prevent -- so a cap enforced from a 6-hourly
+# scheduler could never actually finish enforcing itself at the scale it is
+# for. Batched, the same work is a handful of invocations.
+inventory=$(mktemp -t ai-trash-cleanup.XXXXXX) || exit 0
+items=$(mktemp -t ai-trash-items.XXXXXX) || exit 0
+mtimes=$(mktemp -t ai-trash-mtimes.XXXXXX) || exit 0
+sizes=$(mktemp -t ai-trash-sizes.XXXXXX) || exit 0
+# /bin/rm, never a bare `rm`: ai-trash puts its own wrapper on PATH ahead of
+# /bin, so a bare `rm` here routes this script's own temp files back into the
+# trash it exists to shrink -- observed as 4 stray ai-trash-cleanup.* entries
+# left behind per run, growing the very count the item cap is bounding.
+trap '/bin/rm -f "$inventory" "$items" "$mtimes" "$sizes"' EXIT
+
+# Enumerate once, NUL-delimited, into a file so the two attribute passes can
+# each read the same list. On macOS find matches the ai-trash xattr itself; on
+# Linux everything under the ai-trash directory is ours by construction.
+#
+# Entries whose NAME contains a newline are excluded here. stat and du emit one
+# LINE per path, so such an entry arrives split in two, and the join below
+# would then key the truncated head against a DIFFERENT entry that happens to
+# bear that name -- putting the wrong path in front of a destructive loop.
+# Excluding them costs nothing (no extra pass, no fork) and is always safe:
+# the age purge is NUL-delimited end to end and still reclaims them.
+_nl=$'\n'
+if (( use_xattr_filter )); then
+  find "$scan_dir" -maxdepth 1 -mindepth 1 ! -name '.*.ai-trash' \
+    ! -name "*${_nl}*" -xattrname com.ai-trash.original-path -print0 2>/dev/null > "$items"
+else
+  find "$scan_dir" -maxdepth 1 -mindepth 1 ! -name '.*.ai-trash' \
+    ! -name "*${_nl}*" -print0 2>/dev/null > "$items"
+fi
+# Guard the empty case explicitly rather than relying on how a given xargs
+# treats empty input: run the utility with no operands and `du` would size the
+# working directory while `stat` would block on stdin.
+[[ -s "$items" ]] || exit 0
+
+if [[ "$PLATFORM" == "Darwin" ]]; then
+  xargs -0 stat -f '%m%t%N' < "$items" > "$mtimes" 2>/dev/null
+else
+  xargs -0 stat -c '%Y\t%n' < "$items" > "$mtimes" 2>/dev/null
+fi
+xargs -0 du -sk < "$items" > "$sizes" 2>/dev/null
+
+# Join size onto mtime by path. Both tools emit <value><TAB><path> with the
+# path last, so splitting on the FIRST tab keeps paths containing tabs intact.
+# An entry missing from either pass -- deleted by a live agent between the
+# enumeration and the stat, which happens constantly on the machines this runs
+# on -- is simply absent from the join rather than half-recorded.
+awk '
+  NR == FNR { i = index($0, "\t"); mtime[substr($0, i + 1)] = substr($0, 1, i - 1); next }
+  { i = index($0, "\t"); path = substr($0, i + 1)
+    if (path in mtime) print mtime[path] "\t" substr($0, 1, i - 1) "\t" path }
+' "$mtimes" "$sizes" > "$inventory"
+
+# Current totals on both axes.
+total_kb=$(awk -F'\t' '{s+=$2} END {print s+0}' "$inventory")
+item_count=$(awk 'END {print NR+0}' "$inventory")
+
+# True while ANY enforced cap is still exceeded. One predicate rather than two
+# loops: eviction is oldest-first on a single inventory, so evicting for one
+# cap also relieves the other, and running the axes separately would evict
+# twice over the same sorted list.
+_over_any_cap() {
+  [[ -n "$cap_kb"    ]] && (( total_kb   > cap_kb    )) && return 0
+  [[ -n "$cap_items" ]] && (( item_count > cap_items )) && return 0
+  return 1
 }
 
-# Build a temp inventory of ai-trash items: <mtime>\t<size_kb>\t<path>
-inventory=$(mktemp -t ai-trash-cleanup.XXXXXX) || exit 0
-trap 'rm -f "$inventory"' EXIT
+_over_any_cap || exit 0
 
-while IFS= read -r -d '' item; do
-  if (( use_xattr_filter )); then
-    xattr -p com.ai-trash.original-path "$item" >/dev/null 2>&1 || continue
-  fi
-  mtime=$(_get_mtime "$item") || continue
-  [[ -z "$mtime" ]] && continue
-  size_kb=$(du -sk "$item" 2>/dev/null | awk '{print $1}')
-  [[ -z "$size_kb" ]] && continue
-  printf '%s\t%s\t%s\n' "$mtime" "$size_kb" "$item" >> "$inventory"
-done < <(find "$scan_dir" -maxdepth 1 -mindepth 1 ! -name '.*.ai-trash' -print0 2>/dev/null)
-
-# Total current size of ai-trash items.
-total_kb=$(awk -F'\t' '{s+=$2} END {print s+0}' "$inventory")
-
-(( total_kb <= cap_kb )) && exit 0
-
-# Grace period: items younger than this are exempt from size eviction so that
-# a freshly-trashed huge item can't be evicted before the user has time to
-# notice and restore it. The cap is therefore a soft cap during the grace
-# window; RETENTION_DAYS still bounds long-term trash size.
+# Grace period: items younger than this are exempt from cap eviction so that
+# a freshly-trashed item can't be permanently removed before the user has had
+# time to notice and restore it. Both caps are therefore soft caps during the
+# grace window; RETENTION_DAYS still bounds long-term trash size and count.
 grace_threshold=$(( $(date +%s) - SIZE_EVICTION_GRACE_HOURS * 3600 ))
 
-# Sort oldest-first and evict until under cap. Stop at the first item within
-# the grace window: because the inventory is sorted ascending by mtime, every
-# remaining item is also within grace.
+# Sort oldest-first and evict until under every cap. Stop at the first item
+# within the grace window: because the inventory is sorted ascending by mtime,
+# every remaining item is also within grace.
 sort -n "$inventory" | while IFS=$'\t' read -r mtime size_kb path; do
-  (( total_kb <= cap_kb )) && break
+  _over_any_cap || break
   (( mtime > grace_threshold )) && break
   _remove_trash_item "$path"
   total_kb=$(( total_kb - size_kb ))
+  item_count=$(( item_count - 1 ))
 done

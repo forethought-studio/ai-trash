@@ -41,7 +41,7 @@ if [[ "$PLATFORM" == "Darwin" ]]; then
   if [[ -f "$AGENT_PLIST" ]]; then
     launchctl bootout "gui/$(id -u)/$AGENT_LABEL" 2>/dev/null || \
     launchctl unload "$AGENT_PLIST" 2>/dev/null || true
-    rm -f "$AGENT_PLIST"
+    /bin/rm -f "$AGENT_PLIST"
     echo "  LaunchAgent removed"
   fi
 
@@ -59,7 +59,7 @@ fi
 for cmd in rm rmdir unlink; do
   target=$(readlink "$BIN/$cmd" 2>/dev/null || true)
   if [[ "$target" == *rm_wrapper* ]]; then
-    sudo rm -f "$BIN/$cmd"
+    sudo /bin/rm -f "$BIN/$cmd"
     echo "  removed $BIN/$cmd"
   fi
 done
@@ -67,7 +67,7 @@ done
 for cmd in git; do
   target=$(readlink "$BIN/$cmd" 2>/dev/null || true)
   if [[ "$target" == *git_wrapper* ]]; then
-    sudo rm -f "$BIN/$cmd"
+    sudo /bin/rm -f "$BIN/$cmd"
     echo "  removed $BIN/$cmd"
   fi
 done
@@ -75,7 +75,7 @@ done
 for cmd in find; do
   target=$(readlink "$BIN/$cmd" 2>/dev/null || true)
   if [[ "$target" == *find_wrapper* ]]; then
-    sudo rm -f "$BIN/$cmd"
+    sudo /bin/rm -f "$BIN/$cmd"
     echo "  removed $BIN/$cmd"
   fi
 done
@@ -83,7 +83,7 @@ done
 for cmd in rsync; do
   target=$(readlink "$BIN/$cmd" 2>/dev/null || true)
   if [[ "$target" == *rsync_wrapper* ]]; then
-    sudo rm -f "$BIN/$cmd"
+    sudo /bin/rm -f "$BIN/$cmd"
     echo "  removed $BIN/$cmd"
   fi
 done
@@ -92,7 +92,7 @@ done
 
 for f in ai-trash-lib.sh rm_wrapper.sh git_wrapper.sh find_wrapper.sh rsync_wrapper.sh ai-trash-cleanup ai-trash check-path-shadows.sh; do
   if [[ -f "$BIN/$f" ]]; then
-    sudo rm -f "$BIN/$f"
+    sudo /bin/rm -f "$BIN/$f"
     echo "  removed $BIN/$f"
   fi
 done
@@ -109,12 +109,12 @@ for c in "${CANDIDATES[@]}"; do
   if [[ -f "$c/rm_wrapper.sh" ]] && grep -q "ai-trash" "$c/rm_wrapper.sh" 2>/dev/null; then
     echo "  removing stale install from $c"
     for f in ai-trash-lib.sh rm_wrapper.sh git_wrapper.sh find_wrapper.sh rsync_wrapper.sh ai-trash ai-trash-cleanup check-path-shadows.sh; do
-      sudo rm -f "$c/$f"
+      sudo /bin/rm -f "$c/$f"
     done
     for cmd in rm rmdir unlink git find rsync; do
       target=$(readlink "$c/$cmd" 2>/dev/null || true)
       if [[ "$target" == *_wrapper* ]]; then
-        sudo rm -f "$c/$cmd"
+        sudo /bin/rm -f "$c/$cmd"
       fi
     done
   fi

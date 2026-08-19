@@ -43,72 +43,94 @@ MODE=selective
 # FAST_PATH=false
 
 
-# AI ENVIRONMENT VARIABLES  (selective mode only)
+# AI DETECTION  (selective mode only)
 # ------------------------------------------------
-# Checked before any process lookup — zero performance overhead.
-# Format: "VAR_NAME=value"  (exact match on the value)
+# Three lists decide whether the caller of an rm/git/find/rsync is an AI tool:
 #
-# IDE-integrated terminals set TERM_PROGRAM to identify themselves. If your
-# AI tool's terminal isn't listed, add it here. To find the right value, open
-# a terminal inside your tool and run:  echo $TERM_PROGRAM
+#   AI_ENV_VARS      "VAR=value" pairs, checked before any process lookup
+#   AI_PROCESSES     executable names, matched at every level of the tree
+#   AI_PROCESS_ARGS  command-line substrings, for tools running inside
+#                    node/python where the process name is just "node"
+#
+# ai-trash SHIPS all three. They live in ai-trash-lib.sh, which every upgrade
+# replaces, NOT in this file, which the installer refuses to overwrite once you
+# have one. That placement is load-bearing rather than tidy: while the shipped
+# lists lived here, a config file kept its own frozen copy forever, so a machine
+# installed before "CLAUDECODE=1" was added stopped recognising Claude Code and
+# silently deleted its files for real. Run `ai-trash detection` to see the live
+# lists.
+#
+# The three arrays below are YOUR ADDITIONS, merged on top of the shipped ones.
+# Leave them empty unless you have a tool ai-trash does not already know.
+
+
+# ADD AN AI TOOL BY ENVIRONMENT VARIABLE
+# ---------------------------------------
+# Format: "VAR_NAME=value" (exact match on the value). Cheapest signal there
+# is: it costs no process lookup. IDE terminals set TERM_PROGRAM to identify
+# themselves; open a terminal inside your tool and run:  echo $TERM_PROGRAM
 #
 AI_ENV_VARS=(
-  "TERM_PROGRAM=cursor"       # Cursor IDE
-  "TERM_PROGRAM=vscode"       # VS Code — covers GitHub Copilot, Cline,
-                              #   Continue.dev, Roo, and any other VS Code extension
-  "TERM_PROGRAM=windsurf"     # Windsurf (formerly Codeium)
-  "TERM_PROGRAM=WarpTerminal" # Warp terminal — covers the built-in Oz agent
-                              #   and any CLI agent run inside Warp
-  "OPENCLAW_SHELL=exec"       # OpenClaw — set by its exec tool when running shell commands
-  "CLAUDECODE=1"              # Claude Code — set in every shell session it spawns
-  "CODEX_SANDBOX=seatbelt"    # OpenAI Codex CLI — set in every sandboxed subprocess on macOS
+  # "TERM_PROGRAM=myeditor"
+  # "MYTOOL_SESSION=1"
 )
 
 
-# AI PROCESS NAMES  (selective mode only)
-# ----------------------------------------
-# Matched against the executable name (basename) at every level of the
-# process tree, walking all the way up to launchd (PID 1).
-#
-# Use this for tools that ship as their own named binary.
+# ADD AN AI TOOL BY PROCESS NAME
+# -------------------------------
+# Matched against the executable name (basename) at every level of the process
+# tree, up to launchd (PID 1). For tools that ship as their own named binary.
 # To find the right name, run the tool and check:  ps aux | grep <toolname>
 #
 AI_PROCESSES=(
-  claude      # Claude Code (Anthropic)
-  gemini      # Gemini CLI (Google) — standalone binary install
-  goose       # Goose (Block/Square)
-  opencode    # OpenCode — open-source Claude Code alternative
-  aider       # Aider — when installed as a standalone script (pip install aider-chat)
-  devin       # Devin (Cognition)
-  kiro-cli    # Kiro CLI (AWS) — formerly Amazon Q Developer CLI
-  q           # Amazon Q Developer CLI — pre-Kiro rebrand (still in wide use)
-  openclaw    # OpenClaw — self-hosted AI assistant gateway
-  cline       # Cline — standalone CLI (VS Code extension covered by TERM_PROGRAM=vscode)
-  plandex     # Plandex — large-context terminal agent
-  crush       # Crush — terminal agent by Charm
-  qodo        # Qodo Command — workflow automation agent
+  # mytool
 )
 
 
-# AI PROCESS ARGS  (selective mode only)
-# ----------------------------------------
-# Substring-matched against the full command line at every level of the
-# process tree. Use this for tools that run inside node, python, etc., where
-# the process name alone is just "node" or "python3" and isn't enough.
+# ADD AN AI TOOL BY COMMAND LINE
+# -------------------------------
+# Plain substring (no glob, no regex) matched against the full command line at
+# every level of the tree. For tools that run inside node, python, etc., where
+# the process name alone is just "node" or "python3".
 #
-# Each entry is a plain substring — no glob or regex. Keep patterns specific
-# enough to avoid matching unrelated processes (e.g. "aider" is fine;
-# "ai" would be too broad).
+# Keep entries specific enough not to catch unrelated processes: "aider" is
+# fine, "ai" would match half the process table.
 #
 AI_PROCESS_ARGS=(
-  "codex"       # OpenAI Codex CLI      (runs as: node .../codex/...)
-  "aider"       # Aider                 (runs as: python3 .../aider/... — belt+suspenders
-                #                        with the AI_PROCESSES entry above)
-  "gemini-cli"  # Gemini CLI via npx    (runs as: node .../@google/gemini-cli/...)
-  "gh copilot"  # GitHub Copilot CLI    (runs as: node .../gh-copilot/...)
-  "openhands"   # OpenHands             (runs as: python3 .../openhands/...)
-  "opencode"    # OpenCode              (belt+suspenders with AI_PROCESSES above)
+  # "mytool-cli"
 )
+
+
+# TURNING A SHIPPED DETECTION ENTRY OFF
+# --------------------------------------
+# Exact strings from the shipped lists that you do NOT want matched, across all
+# three. Copy them verbatim from `ai-trash detection`.
+#
+# The generic names are what this is for. ai-trash ships "q" because that was
+# Amazon Q Developer CLI's binary name, so if you have your own `q` on PATH,
+# every delete it makes is treated as an AI delete. That is a safe direction to
+# be wrong in (you get a recoverable copy), but it is not always what you want:
+#
+#   DISABLE_BUILTIN_AI_DETECTION=(
+#     "q"
+#   )
+#
+DISABLE_BUILTIN_AI_DETECTION=()
+
+
+# TURNING ALL SHIPPED DETECTION OFF
+# ----------------------------------
+# Master switch. Leave true to detect the tools ai-trash knows about plus your
+# additions. Set to false to detect ONLY what you listed above.
+#
+# Note this is the mirror image of USE_BUILTIN_BYPASS_PATTERNS, which requires
+# the exact string "true". Here anything other than "false" counts as true,
+# because detecting a tool ADDS protection while bypassing a path permanently
+# deletes: a value ai-trash cannot read should leave the protective default on
+# and the destructive one off. Both rules keep your file.
+#
+USE_BUILTIN_AI_DETECTION=true
+# USE_BUILTIN_AI_DETECTION=false
 
 
 # GIT PROTECTION
@@ -154,210 +176,78 @@ RSYNC_PROTECT_ALL_LOCAL=false
 
 # BYPASS TRASH PATTERNS
 # ----------------------
-# Files whose resolved absolute path matches any pattern here are permanently
-# deleted (/bin/rm) instead of going to ai-trash. Use this for files that have
-# zero recovery value so they don't bloat the trash.
+# Files whose resolved absolute path matches a bypass pattern are permanently
+# deleted (/bin/rm) instead of going to ai-trash. That is for paths with zero
+# recovery value, so tool churn does not bloat the trash the way it did on a
+# profiled host where one AI tool's ephemeral snapshots were 90.4% of every
+# item trashed in a retention window.
+#
+# ai-trash SHIPS a builtin list of such patterns (git lock files, node_modules,
+# DerivedData, __pycache__, AI-tool scratch state, and about eighty more). The
+# builtins do NOT live in this file, and that is deliberate: the installer never
+# overwrites a config you already have, so any default shipped here would reach
+# new installs only and freeze forever on every machine that upgraded. They live
+# in ai-trash-lib.sh, which every upgrade DOES replace, so new shipped defaults
+# reach you automatically. See `ai-trash bypass-patterns` for the live list.
+#
+# The three knobs below are yours; the builtin list is not meant to be edited.
 #
 # Patterns are extended regular expressions (ERE), matched with bash =~.
 # $HOME is expanded at config-load time when written inside double quotes.
 # A pattern without ^ or $ anchors matches anywhere in the path.
 #
+# Effective list = builtins (unless disabled) - DISABLE_... + BYPASS_...
+
+
+# YOUR ADDITIONS
+# ---------------
+# Extra patterns to bypass, on top of the builtins. `ai-trash suggest` analyses
+# what is actually in your trash and prints ready-to-paste entries for here.
+#
+# Use += rather than = if you want to be sure you are adding to, and not
+# replacing, anything set earlier in this file.
+#
 BYPASS_TRASH_PATTERNS=(
-  # macOS temp dirs — mktemp outputs; cleaned by OS on reboot
-  "^/private/var/folders/"
-  "^/var/folders/"
-  "^/private/tmp/"
-  "^/tmp/"
-
-  # macOS system Trash — mktemp-style ephemeral files that ended up in ~/.Trash
-  # (common in safe mode when tools delete temp files). Never worth recovering.
-  "$HOME/\.Trash/tmp\."
-
-  # Git transient lock and state files — contain no data, never worth restoring
-  "/\.git/index\.lock$"
-  "/\.git/MERGE_HEAD$"
-  "/\.git/CHERRY_PICK_HEAD$"
-  "/\.git/REVERT_HEAD$"
-  "/\.git/BISECT_HEAD$"
-  "/\.git/ORIG_HEAD$"
-
-  # ── AI coding tool ephemeral state ──────────────────────────────────
-  # These are the highest-volume deletions on a machine that runs AI coding
-  # agents all day, which is exactly the machine ai-trash is installed on.
-  # Without these patterns the trash fills with tool bookkeeping rather than
-  # the user work it exists to protect.
-
-  # Claude Code's pre-Bash git snapshot: one written and deleted per Bash
-  # tool call, per session. On a measured machine these were 66,098 of
-  # 73,121 trashed items (90.4%) over a single retention window. Pure
-  # ephemeral tool state that is never restored.
-  # The (.*/)? is load-bearing: in a linked worktree or a submodule these
-  # live under .git/worktrees/<name>/ or .git/modules/<name>/, not directly
-  # under .git/. Scoping to .git/ keeps a user file that happens to share
-  # the name out of the bypass.
-  "/\.git/(.*/)?\.claude-bash-pre-[0-9a-f-]+\.snapshot$"
-
-  # Aider repo-map cache, rebuilt from source on the next aider run
-  "/\.aider\.tags\.cache\.v[0-9]+(/|$)"
-
-  # Claude desktop app Electron caches, rebuilt on next launch.
-  # "Code Cache" needs its own entry: its path does not contain "/Claude/Cache".
-  "$HOME/Library/Application Support/Claude/Cache"
-  "$HOME/Library/Application Support/Claude/Code Cache"
-
-  # pyenv shims — auto-generated by pyenv; recreated instantly with pyenv rehash
-  "/\.pyenv/shims/"
-
-  # ssh-copy-id temp files — ephemeral, created and discarded by the command
-  "/\.ssh/ssh-copy-id\."
-
-  # node_modules — reinstalled instantly with npm/yarn/bun install; never worth recovering
-  "/node_modules/"
-
-  # Playwright browser binaries (chromium, webkit, firefox) — large, auto-downloaded on demand
-  "/ms-playwright/"
-
-  # Gradle daemon — process lock/state files, auto-recreated on next build
-  "/\.gradle/daemon"
-
-  # macOS .framework bundles — system/Xcode artifacts, large, managed by the OS
-  "\.framework(/|$)"
-
-  # Xcode provisioning profiles — code-signing artifacts, auto-managed by Xcode
-  "\.provisionprofile$"
-
-  # Python bytecode — auto-generated, recreated on import
-  "__pycache__(/|$)"
-  "\.pyc$"
-
-  # macOS Finder metadata — auto-recreated when opening any folder
-  "\.DS_Store$"
-
-  # Xcode build intermediates and test result bundles
-  "/DerivedData/"
-  "\.xcresult(/|$)"
-
-  # React Native / Expo iOS build output, regenerated on next build
-  "/ios/build(/|$)"
-
-  # Gradle build output (Android), regenerated on next build
-  "/android/app/build(/|$)"
-  "/build/android(/|$)"
-
-  # Mobile test/build artifacts that are regenerated by local verification runs
-  "/build/PrefixCheckDD(/|$)"
-  "/\.e2e-logs/detox-[^/]*\.log$"
-  "/artifacts/ios\.sim\.debug\."
-  "/tmp/jest(/|$)"
-  "/thumbcache(/|$)"
-
-  # Xcode "do not index" caches: ModuleCache.noindex, Index.noindex,
-  # CompilationCache.noindex, SDKStatCaches.noindex. Pure caches, regenerated
-  # on next build. Catches DerivedData-shaped trees with non-standard names.
-  "\.noindex(/|$)"
-
-  # Java compiled bytecode — always regenerated from .java source
-  "\.class$"
-
-  # Python tool caches and packaging metadata
-  "/\.pytest_cache(/|$)"
-  "/\.mypy_cache(/|$)"
-  "\.egg-info(/|$)"
-  "/\.tox(/|$)"
-  "/\.nox(/|$)"
-
-  # CocoaPods dependencies — regenerated by pod install
-  "/Pods(/|$)"
-
-  # CocoaPods global cache — auto-downloaded on demand by pod install
-  "/Library/Caches/CocoaPods/"
-
-  # Vim swap files — ephemeral editor state
-  "\.swp$"
-  "\.swo$"
-
-  # Ruby Bundler — regenerated by bundle install
-  "/vendor/bundle/"
-
-  # Autoconf/configure artifacts — created and deleted thousands of times per
-  # ./configure run. Ephemeral test programs, objects, and temp files with zero
-  # recovery value.
-  "/conftest$"
-  "/conftest\."
-  "/conftest[0-9]"
-  "/confdefs\.h$"
-  "/confcache$"
-  "/confinc\."
-  "/confmf\."
-  "/conf[0-9][0-9]*"
-  "/libconftest\."
-  "/conftstm\."
-
-  # Default compiler output, never intentionally named
-  "/a\.out$"
-
-  # Swift Package Manager build output, regenerated by swift build
-  "\.build(/|$)"
-
-  # JS framework build/cache dirs, regenerated by dev/build commands
-  "/\.next(/|$)"
-  "/\.nuxt(/|$)"
-  "/\.parcel-cache(/|$)"
-  "/\.svelte-kit(/|$)"
-  "/\.angular/cache(/|$)"
-  "/\.turbo(/|$)"
-
-  # Flutter/Dart generated build state, regenerated by pub get / flutter build
-  "/\.dart_tool(/|$)"
-
-  # Terraform provider/module cache, regenerated by terraform init
-  "/\.terraform(/|$)"
-
-  # CMake build artifacts, regenerated by cmake configure/build
-  "/cmake-build-[^/]+(/|$)"
-  "/CMakeFiles(/|$)"
-  "/CMakeCache\.txt$"
-
-  # Bazel build outputs, regenerated by bazel build/test
-  "/bazel-(bin|out|testlogs)(/|$)"
-
-  # Buck/Buck2 build output, regenerated by buck build
-  "/buck-out(/|$)"
-
-  # Android NDK/Gradle native CMake intermediates, regenerated by Gradle
-  "/\.cxx(/|$)"
-
-  # Gradle project-local caches (excludes wrapper config/scripts)
-  "/\.gradle/caches(/|$)"
-  "/\.gradle/buildOutputCleanup(/|$)"
-  "/\.gradle/configuration-cache(/|$)"
-
-  # Gradle buildSrc compiled output, regenerated by Gradle
-  "/buildSrc/build(/|$)"
-
-  # Maven wrapper downloaded distributions, regenerated by mvnw
-  "/\.mvn/wrapper/dists(/|$)"
-
-  # Serverless Framework deployment artifacts, regenerated by sls package
-  "/\.serverless(/|$)"
-
-  # AWS SAM build artifacts, regenerated by sam build
-  "/\.aws-sam(/|$)"
-
-  # AWS CDK synthesized output, regenerated by cdk synth
-  "/cdk\.out(/|$)"
-
-  # Sass compiler cache, regenerated on build
-  "/\.sass-cache(/|$)"
-
-  # NYC/Istanbul coverage data, regenerated by test runs
-  "/\.nyc_output(/|$)"
-
   # Examples (uncomment to enable):
   # "\.o$"                                     # C/C++ object files (short extension, opt-in)
   # "\.dSYM(/|$)"                              # Debug symbols (may be needed for crash symbolication)
-  # "/target(/|$)"                             # Cargo/Maven build output (common name, opt-in)
+  # "/target(/|$)"                              # Cargo/Maven build output (common name, opt-in)
 )
+
+
+# TURNING A SHIPPED DEFAULT OFF
+# ------------------------------
+# Exact pattern strings from the builtin list that you do NOT want applied.
+# The match is an exact string comparison, not a regex: copy the string
+# verbatim from `ai-trash bypass-patterns`, which prints the live builtin list
+# and warns about entries here that match no builtin (a typo would otherwise
+# fail silently).
+#
+# Example - keep node_modules and .DS_Store recoverable:
+#   DISABLE_BUILTIN_BYPASS_PATTERNS=(
+#     "/node_modules/"
+#     "\.DS_Store$"
+#   )
+#
+DISABLE_BUILTIN_BYPASS_PATTERNS=()
+
+
+# TURNING ALL SHIPPED DEFAULTS OFF
+# ---------------------------------
+# Master switch. Leave true to get the shipped list plus your additions. Set to
+# false to ignore the builtin list entirely, so ONLY BYPASS_TRASH_PATTERNS above
+# decides what skips the trash - including the empty case, where nothing is ever
+# permanently deleted and every intercepted delete is recoverable.
+#
+# Only the exact string "true" enables the builtins, the same rule the
+# GIT_PROTECTION / FIND_PROTECTION / RSYNC_PROTECTION toggles follow. A typo
+# ("TRUE", "yes") therefore leaves them off rather than on: a bypass PERMANENTLY
+# deletes, so a value ai-trash cannot read must not authorise that. Deleting the
+# line entirely is also fine and means true. `ai-trash bypass-patterns` tells you
+# which of the three cases you are in.
+#
+USE_BUILTIN_BYPASS_PATTERNS=true
+# USE_BUILTIN_BYPASS_PATTERNS=false
 
 
 # TRASH RETENTION
@@ -395,21 +285,70 @@ RETENTION_DAYS=30
 # MAX_TRASH_SIZE_GB=20
 
 
-# SIZE-EVICTION GRACE PERIOD
-# ---------------------------
-# When the size cap above is exceeded, items are evicted oldest-first.
+# TRASH ITEM-COUNT CAP
+# ---------------------
+# Hard ceiling on the NUMBER of ai-trash entries in the trash directory.
+# Like the size cap it runs after the age-based purge, evicting the OLDEST
+# items first until the count drops under it.
+#
+# Why this exists as its own axis, and why the size cap does not cover it:
+# the cost that actually degrades a machine is per-ENTRY, not per-byte.
+# Finder continuously re-enumerates ~/.Trash to maintain its size and its
+# Dock badge, issuing one getattrlist per entry, so a trash holding many
+# tiny files is far more expensive than one holding a few large ones. On a
+# measured agent-driven host, 73,121 top-level entries averaging ~167 KB
+# each held Finder at 99-100% of a CPU core continuously, surviving every
+# Finder relaunch, because the driver was the directory rather than process
+# state. A 10 GiB size cap would still have permitted ~60,000 of them, and
+# an age cap bounds only count x intake rate -- and intake rate on a machine
+# running AI agents all day is orders of magnitude above the human case the
+# 30-day retention default was chosen for.
+#
+# Values:
+#   (unset / empty)  : auto. 25,000 items. Roughly a third of the count
+#                      measured to pin Finder to a core, and well above the
+#                      steady state of the busiest profiled agent host
+#                      (~16,500: about 550 genuine deletions a day held for
+#                      30 days), so it behaves as a safety net for an
+#                      unprofiled workload rather than as a silent
+#                      shortening of RETENTION_DAYS.
+#   0                : disabled. Only RETENTION_DAYS and MAX_TRASH_SIZE_GB
+#                      bound the trash.
+#   N (integer)      : fixed cap of N items.
+#
+# The cap counts only ai-trash's own entries -- items you or another app put
+# in the trash are never evicted by it, and are not counted towards it.
+# Like the size cap it is enforced once per scheduler run, not on every
+# delete, so a burst can briefly exceed it.
+#
+# If you are seeing a runaway item count, raising this is the wrong lever:
+# add the offending path family to BYPASS_TRASH_PATTERNS above so the churn
+# never reaches the trash in the first place. This cap is the backstop for
+# the families nobody has profiled yet.
+#
+# MAX_TRASH_ITEMS=
+# MAX_TRASH_ITEMS=0
+# MAX_TRASH_ITEMS=50000
+
+
+# CAP-EVICTION GRACE PERIOD
+# --------------------------
+# When either cap above is exceeded, items are evicted oldest-first.
 # This setting exempts very recent items: anything trashed within the last
-# N hours stays put, even if the cap is over. It exists because a single
+# N hours stays put, even if a cap is over. It exists because a single
 # huge AI-deleted item shouldn't be permanently removed before you've had
 # a chance to notice and restore it.
 #
-# Effect: the cap is a soft cap during the grace window. If your trash is
+# Effect: both caps are soft caps during the grace window. If your trash is
 # 200 GiB and your cap is 50 GiB but everything was trashed in the last
-# 24 hours, nothing is evicted by the size cap. RETENTION_DAYS still bounds
-# long-term trash size.
+# 24 hours, nothing is evicted. RETENTION_DAYS still bounds long-term trash
+# size and item count.
 #
 # Set to 0 to disable the grace period (revert to strict oldest-first
 # eviction regardless of recency).
+#
+# The name is historical -- this applied only to the size cap before the
+# item cap existed -- and is kept so existing config files keep working.
 #
 SIZE_EVICTION_GRACE_HOURS=24
 

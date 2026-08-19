@@ -21,7 +21,11 @@ FAILURES=0
 # Work dir is under $HOME so files aren't caught by the /tmp disposable rule.
 # TEST_HOME has its own Trash hierarchy so we never touch the real system Trash.
 # Clean up any leftover test dirs from previously killed runs
-rm -rf "$HOME"/ai-trash-test-* 2>/dev/null || true
+# /bin/rm throughout this file, never a bare `rm`: on an installed machine
+# ai-trash's own wrapper shadows rm on PATH, so a bare `rm` here would move the
+# suite's work directories into the real ~/.Trash instead of deleting them --
+# the test suite would then inflate the very trash it is testing.
+/bin/rm -rf "$HOME"/ai-trash-test-* 2>/dev/null || true
 
 WORK_DIR="$HOME/ai-trash-test-$$"
 TEST_HOME="$WORK_DIR/home"
@@ -37,7 +41,7 @@ fi
 TEST_CONF_DIR="$TEST_HOME/.config/ai-trash"
 mkdir -p "$TEST_TRASH" "$TEST_CONF_DIR"
 
-trap 'rm -rf "$WORK_DIR"' EXIT
+trap '/bin/rm -rf "$WORK_DIR"' EXIT
 
 REPO_DIR="$(pwd)"
 
@@ -48,8 +52,13 @@ _rm() {
 }
 
 # Run ai-trash CLI with overridden HOME (isolates trash dir)
+# XDG_CONFIG_HOME="" for the same reason _rm sets it: the library resolves the
+# config as ${XDG_CONFIG_HOME:-$HOME/.config}/ai-trash/config.sh, so overriding
+# HOME alone does NOT isolate the config on a host that exports XDG_CONFIG_HOME.
+# Commands that read config (bypass-patterns, suggest) would then be answering
+# from the real user's file instead of the suite's.
 _ai_trash() {
-  HOME="$TEST_HOME" bash "$REPO_DIR/ai-trash" "$@" 2>&1 || true
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/ai-trash" "$@" 2>&1 || true
 }
 
 # ─── Portable timeout ──────────────────────────────────────────────────
@@ -125,7 +134,7 @@ _system_trash_count() {
 # ─── Config helpers ────────────────────────────────────────────────────
 _set_mode() {
   cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
-  sed -i.bak "s/^MODE=.*/MODE=$1/" "$TEST_CONF_DIR/config.sh" && rm -f "${TEST_CONF_DIR}/config.sh.bak"
+  sed -i.bak "s/^MODE=.*/MODE=$1/" "$TEST_CONF_DIR/config.sh" && /bin/rm -f "${TEST_CONF_DIR}/config.sh.bak"
 }
 
 # ─── Tests ─────────────────────────────────────────────────────────────
@@ -763,6 +772,154 @@ fi
 cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
 _ai_trash empty --force >/dev/null 2>&1
 
+# ─── ai-trash-cleanup: item-count-cap eviction ─────────────────────────
+# MAX_TRASH_ITEMS bounds the NUMBER of ai-trash entries, which neither the age
+# purge nor the size cap does. It is its own axis because Finder's cost is
+# per-entry: a measured host reached 73,121 top-level entries of ~167 KB each
+# and held Finder at 99-100% of a core indefinitely, a state a 10 GiB size cap
+# would have permitted.
+
+# Age a trash entry by N days, past the 24h eviction grace window.
+_age_trash_item() {
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    touch -t "$(date -v-"$2"d +%Y%m%d%H%M)" "$1"
+  else
+    touch -t "$(date -d "$2 days ago" +%Y%m%d%H%M)" "$1"
+  fi
+}
+
+# Trash N files named "<prefix>-NN.txt" through the rm wrapper, ageing them so
+# that index 1 is the oldest entry and index N the newest. Every age is outside
+# the grace window and inside the 30-day retention window, so the item cap is
+# the only thing that can evict them.
+_seed_aged_items() {
+  local prefix=$1 n=$2 i name
+  for (( i = 1; i <= n; i++ )); do
+    name=$(printf '%s-%02d.txt' "$prefix" "$i")
+    echo "$name" > "$WORK_DIR/$name"
+    _rm "$WORK_DIR/$name"
+    _age_trash_item "$TEST_TRASH/$name" $(( n - i + 1 ))
+  done
+}
+
+_section "ai-trash-cleanup: item cap evicts oldest first"
+_ai_trash empty --force >/dev/null 2>&1
+cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
+echo "MAX_TRASH_ITEMS=2" >> "$TEST_CONF_DIR/config.sh"
+_seed_aged_items itemcap 6
+itemcap_before=$(_trash_count)
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/ai-trash-cleanup"
+itemcap_after=$(_trash_count)
+itemcap_survivors=$(_trash_names | sort | tr '\n' ' ')
+if [[ "$itemcap_before" == "6" && "$itemcap_after" == "2" \
+      && "$itemcap_survivors" == "itemcap-05.txt itemcap-06.txt " ]]; then
+  _pass "item cap: 6 items evicted down to 2, newest two survived"
+else
+  _fail "item cap: before=$itemcap_before after=$itemcap_after survivors=[$itemcap_survivors] (expected 6 -> 2, newest two)"
+fi
+
+_section "ai-trash-cleanup: item cap is enforced when the size cap is disabled"
+# Regression guard for the structural defect: size-cap resolution used to exit
+# the script outright on MAX_TRASH_SIZE_GB=0 (and on an unparseable value, and
+# on an unreadable disk size), so anything enforced afterwards could never run.
+# The two caps are independent axes and neither may short-circuit the other.
+_ai_trash empty --force >/dev/null 2>&1
+cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
+echo "MAX_TRASH_SIZE_GB=0" >> "$TEST_CONF_DIR/config.sh"
+echo "MAX_TRASH_ITEMS=2" >> "$TEST_CONF_DIR/config.sh"
+_seed_aged_items nosizecap 5
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/ai-trash-cleanup"
+nosizecap_after=$(_trash_count)
+[[ "$nosizecap_after" == "2" ]] \
+  && _pass "item cap: still enforced with MAX_TRASH_SIZE_GB=0 (5 -> 2)" \
+  || _fail "item cap: MAX_TRASH_SIZE_GB=0 left count at $nosizecap_after, expected 2"
+
+_section "ai-trash-cleanup: item cap is enforced when the size cap is unparseable"
+_ai_trash empty --force >/dev/null 2>&1
+cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
+echo 'MAX_TRASH_SIZE_GB="not-a-number"' >> "$TEST_CONF_DIR/config.sh"
+echo "MAX_TRASH_ITEMS=2" >> "$TEST_CONF_DIR/config.sh"
+_seed_aged_items badsizecap 5
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/ai-trash-cleanup"
+badsizecap_after=$(_trash_count)
+[[ "$badsizecap_after" == "2" ]] \
+  && _pass "item cap: still enforced with unparseable MAX_TRASH_SIZE_GB (5 -> 2)" \
+  || _fail "item cap: unparseable MAX_TRASH_SIZE_GB left count at $badsizecap_after, expected 2"
+
+_section "ai-trash-cleanup: MAX_TRASH_ITEMS=0 disables item eviction"
+_ai_trash empty --force >/dev/null 2>&1
+cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
+echo "MAX_TRASH_SIZE_GB=0" >> "$TEST_CONF_DIR/config.sh"
+echo "MAX_TRASH_ITEMS=0" >> "$TEST_CONF_DIR/config.sh"
+_seed_aged_items itemoff 4
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/ai-trash-cleanup"
+itemoff_after=$(_trash_count)
+[[ "$itemoff_after" == "4" ]] \
+  && _pass "item cap: MAX_TRASH_ITEMS=0 evicted nothing" \
+  || _fail "item cap: MAX_TRASH_ITEMS=0 left count at $itemoff_after, expected 4"
+
+_section "ai-trash-cleanup: unparseable MAX_TRASH_ITEMS fails safe"
+# A destructive cap must never guess at a garbage value. Anything that is not
+# a positive integer leaves the axis unenforced rather than evicting to 0.
+_ai_trash empty --force >/dev/null 2>&1
+cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
+echo "MAX_TRASH_SIZE_GB=0" >> "$TEST_CONF_DIR/config.sh"
+echo 'MAX_TRASH_ITEMS="lots"' >> "$TEST_CONF_DIR/config.sh"
+_seed_aged_items itemjunk 4
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/ai-trash-cleanup"
+itemjunk_after=$(_trash_count)
+[[ "$itemjunk_after" == "4" ]] \
+  && _pass "item cap: unparseable MAX_TRASH_ITEMS evicted nothing" \
+  || _fail "item cap: unparseable MAX_TRASH_ITEMS left count at $itemjunk_after, expected 4"
+
+_section "ai-trash-cleanup: item-cap grace window preserves recent items"
+# Items inside SIZE_EVICTION_GRACE_HOURS are exempt on the count axis too, so
+# a same-day burst is never destroyed before the user can restore it. The cap
+# is therefore soft during the window; RETENTION_DAYS still bounds the count.
+_ai_trash empty --force >/dev/null 2>&1
+cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
+echo "MAX_TRASH_SIZE_GB=0" >> "$TEST_CONF_DIR/config.sh"
+echo "MAX_TRASH_ITEMS=1" >> "$TEST_CONF_DIR/config.sh"
+_seed_aged_items itemgraceold 2
+for _ig in 1 2; do
+  echo "itemgracenew-$_ig" > "$WORK_DIR/itemgracenew-$_ig.txt"
+  _rm "$WORK_DIR/itemgracenew-$_ig.txt"
+done
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/ai-trash-cleanup"
+itemgrace_after=$(_trash_count)
+itemgrace_survivors=$(_trash_names | sort | tr '\n' ' ')
+if [[ "$itemgrace_after" == "2" && "$itemgrace_survivors" != *itemgraceold* ]]; then
+  _pass "item cap: grace window preserved both recent items, evicted both aged ones"
+else
+  _fail "item cap grace: after=$itemgrace_after survivors=[$itemgrace_survivors] (expected 2, none aged)"
+fi
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  _section "ai-trash-cleanup: item cap ignores trash entries ai-trash did not create"
+  # The cap bounds ai-trash's own contribution. Items the user or another app
+  # put in ~/.Trash carry no com.ai-trash.original-path xattr: they must be
+  # neither counted towards the cap nor evicted by it.
+  _ai_trash empty --force >/dev/null 2>&1
+  cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
+  echo "MAX_TRASH_SIZE_GB=0" >> "$TEST_CONF_DIR/config.sh"
+  echo "MAX_TRASH_ITEMS=1" >> "$TEST_CONF_DIR/config.sh"
+  echo "not ours" > "$TEST_TRASH/foreign-entry.txt"
+  _age_trash_item "$TEST_TRASH/foreign-entry.txt" 3
+  _seed_aged_items foreigntest 3
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/ai-trash-cleanup"
+  foreign_survivors=$(_trash_names | sort | tr '\n' ' ')
+  # 3 ai-trash items, cap 1 -> 2 evicted, newest kept. The foreign entry is
+  # invisible to the cap, so exactly it plus foreigntest-03.txt remain.
+  if [[ "$foreign_survivors" == "foreign-entry.txt foreigntest-03.txt " ]]; then
+    _pass "item cap: foreign trash entry neither counted nor evicted"
+  else
+    _fail "item cap foreign: survivors=[$foreign_survivors] (expected 'foreign-entry.txt foreigntest-03.txt ')"
+  fi
+fi
+
+cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
+_ai_trash empty --force >/dev/null 2>&1
+
 _section "rm_wrapper: --help passes through to /bin/rm"
 out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/rm_wrapper.sh" --help 2>&1 || true)
 if echo "$out" | grep -qiE "usage|illegal option|remove"; then
@@ -1346,7 +1503,7 @@ _section "git_wrapper: non-destructive command does no process inspection and do
 _ps_fakebin="$WORK_DIR/ps-sentinel-bin"
 _ps_sentinel="$WORK_DIR/ps-was-called"
 mkdir -p "$_ps_fakebin"
-rm -f "$_ps_sentinel"
+/bin/rm -f "$_ps_sentinel"
 printf '#!/bin/bash\necho called >> "%s"\nexec /bin/ps "$@"\n' "$_ps_sentinel" > "$_ps_fakebin/ps"
 chmod +x "$_ps_fakebin/ps"
 "$_TIMEOUT" 12 env -u CLAUDECODE -u CODEX_SANDBOX -u OPENCLAW_SHELL \
@@ -1372,7 +1529,7 @@ _shim_dir="$WORK_DIR/fake-git-shim"
 mkdir -p "$_shim_dir"
 printf '#!/bin/bash\necho chained >> "%s/shim-was-run"\nexit 0\n' "$WORK_DIR" > "$_shim_dir/git"
 chmod +x "$_shim_dir/git"
-rm -f "$WORK_DIR/shim-was-run"
+/bin/rm -f "$WORK_DIR/shim-was-run"
 _chain_out=$(env HOME="$TEST_HOME" XDG_CONFIG_HOME="" TERM_PROGRAM=cursor \
   PATH="$_shim_dir:/usr/bin:/bin" \
   bash "$GIT_LINK" -C "$GIT_REPO" rev-parse --is-inside-work-tree </dev/null 2>/dev/null)
@@ -3733,6 +3890,475 @@ fi
 /bin/rm -rf "$WORK_DIR/proj"
 
 _ai_trash empty --force >/dev/null 2>&1
+
+# ─── Builtin bypass patterns reaching an existing install ──────────────
+# install.sh never overwrites ~/.config/ai-trash/config.sh, so for as long as
+# the shipped bypass defaults lived in that template they reached new installs
+# only: every upgraded machine stayed frozen on the list it first installed.
+# The defaults now live in ai-trash-lib.sh, which every upgrade DOES replace.
+# These tests drive rm_wrapper.sh (the real entry point) against a config file
+# written the way a pre-builtins release wrote it.
+
+# Write a config exactly as v1.6.22 and earlier shipped it: MODE plus one
+# self-contained BYPASS_TRASH_PATTERNS array holding that release's defaults,
+# and no knowledge of the builtin list, the disable list, or the master switch.
+# Deliberately NOT derived from config.default.sh -- deriving it from the
+# current template is what would make this test unable to fail.
+_write_legacy_config() {
+  cat > "$TEST_CONF_DIR/config.sh" <<LEGACY_EOF
+MODE=selective
+
+# Bypass patterns - empty by default; populated from user config
+BYPASS_TRASH_PATTERNS=(
+  "^/private/tmp/"
+  "^/tmp/"
+  "/\.git/index\.lock\$"
+  "/node_modules/"
+  "/legacy-only-junk/"
+)
+LEGACY_EOF
+}
+
+_section "builtin bypass: v1.6.22-era config still picks up a new shipped default"
+_write_legacy_config
+# The Claude Code pre-Bash snapshot pattern shipped in v1.6.23. It was 90.4%
+# of trashed items on a measured host and, before this change, no existing
+# install could ever receive it.
+legacy_repo="$WORK_DIR/legacy-proj/.git"
+mkdir -p "$legacy_repo"
+legacy_snap="$legacy_repo/.claude-bash-pre-6f1c9a2e-0d3b-4a71-9c55-2b8e7d41a0f3.snapshot"
+echo "shell state" > "$legacy_snap"
+before_count=$(_trash_count)
+_rm "$legacy_snap"
+after_count=$(_trash_count)
+if [[ ! -f "$legacy_snap" ]] && [[ "$after_count" -eq "$before_count" ]]; then
+  _pass "builtin bypass: new default reached a legacy config (snapshot permanently deleted)"
+elif [[ ! -f "$legacy_snap" ]]; then
+  _fail "builtin bypass: legacy config did not get the new default (snapshot went to trash, $before_count -> $after_count)"
+else
+  _fail "builtin bypass: snapshot still exists"
+fi
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "builtin bypass: a legacy config's own patterns keep working"
+# Backward compatibility of the persisted format: the old array becomes
+# "user additions", so a pattern only that file knows about must still fire.
+_write_legacy_config
+mkdir -p "$WORK_DIR/legacy-only-junk"
+legacy_junk="$WORK_DIR/legacy-only-junk/cache.bin"
+echo "junk" > "$legacy_junk"
+before_count=$(_trash_count)
+_rm "$legacy_junk"
+after_count=$(_trash_count)
+if [[ ! -f "$legacy_junk" ]] && [[ "$after_count" -eq "$before_count" ]]; then
+  _pass "builtin bypass: legacy config's own pattern still bypasses"
+elif [[ ! -f "$legacy_junk" ]]; then
+  _fail "builtin bypass: legacy config's own pattern stopped working (went to trash)"
+else
+  _fail "builtin bypass: legacy junk file still exists"
+fi
+/bin/rm -rf "$WORK_DIR/legacy-only-junk"
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "builtin bypass: negative control, a real file under a legacy config is still trashed"
+# Without this the two tests above would pass just as well if the builtins had
+# swallowed everything.
+_write_legacy_config
+mkdir -p "$WORK_DIR/legacy-proj"
+legacy_doc="$WORK_DIR/legacy-proj/notes.md"
+echo "user work" > "$legacy_doc"
+before_count=$(_trash_count)
+_rm "$legacy_doc"
+after_count=$(_trash_count)
+if [[ ! -f "$legacy_doc" ]] && [[ "$after_count" -gt "$before_count" ]]; then
+  _pass "builtin bypass: negative control, ordinary file still went to trash"
+else
+  _fail "builtin bypass: negative control failed (count $before_count -> $after_count, exists=$([ -f "$legacy_doc" ] && echo yes || echo no))"
+fi
+/bin/rm -rf "$WORK_DIR/legacy-proj"
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "builtin bypass: DISABLE_BUILTIN_BYPASS_PATTERNS turns a shipped default off"
+_set_mode selective
+echo 'DISABLE_BUILTIN_BYPASS_PATTERNS=("/node_modules/")' >> "$TEST_CONF_DIR/config.sh"
+nm_dir="$WORK_DIR/dis-proj/node_modules/left-pad"
+mkdir -p "$nm_dir"
+# A file INSIDE node_modules, not the directory: the shipped pattern is
+# "/node_modules/" with no (/|$) alternation, so it matches contained paths
+# only. Deleting the directory itself never matched it and would make this
+# test pass without the disable list doing anything.
+nm_file="$nm_dir/index.js"
+echo "module" > "$nm_file"
+before_count=$(_trash_count)
+_rm "$nm_file"
+after_count=$(_trash_count)
+if [[ ! -f "$nm_file" ]] && [[ "$after_count" -gt "$before_count" ]]; then
+  _pass "builtin bypass: disabled default no longer bypasses (node_modules file went to trash)"
+elif [[ ! -f "$nm_file" ]]; then
+  _fail "builtin bypass: disable had no effect (node_modules file still permanently deleted)"
+else
+  _fail "builtin bypass: node_modules file still exists"
+fi
+/bin/rm -rf "$WORK_DIR/dis-proj"
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "builtin bypass: disabling one default leaves the others in force"
+# Control for the test above: proves the disable list is surgical rather than
+# a global off switch that happened to produce the expected count.
+_set_mode selective
+echo 'DISABLE_BUILTIN_BYPASS_PATTERNS=("/node_modules/")' >> "$TEST_CONF_DIR/config.sh"
+dis_lock_dir="$WORK_DIR/dis-proj2/.git"
+mkdir -p "$dis_lock_dir"
+dis_lock="$dis_lock_dir/index.lock"
+echo "" > "$dis_lock"
+before_count=$(_trash_count)
+_rm "$dis_lock"
+after_count=$(_trash_count)
+if [[ ! -f "$dis_lock" ]] && [[ "$after_count" -eq "$before_count" ]]; then
+  _pass "builtin bypass: a non-disabled default still bypasses"
+elif [[ ! -f "$dis_lock" ]]; then
+  _fail "builtin bypass: disabling one default switched all of them off"
+else
+  _fail "builtin bypass: index.lock still exists"
+fi
+/bin/rm -rf "$WORK_DIR/dis-proj2"
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "builtin bypass: disable list is an exact string, not a substring"
+# "node_modules" is a substring of the builtin "/node_modules/". Matching
+# loosely would silently switch off patterns the user never named, and every
+# bypass is a PERMANENT delete, so the failure direction matters.
+_set_mode selective
+echo 'DISABLE_BUILTIN_BYPASS_PATTERNS=("node_modules")' >> "$TEST_CONF_DIR/config.sh"
+nm2_dir="$WORK_DIR/dis-proj3/node_modules/left-pad"
+mkdir -p "$nm2_dir"
+# Same path shape as the disable test above, so the two form a matched pair:
+# only the disable-list entry differs between them.
+nm2_file="$nm2_dir/index.js"
+echo "module" > "$nm2_file"
+before_count=$(_trash_count)
+_rm "$nm2_file"
+after_count=$(_trash_count)
+if [[ ! -f "$nm2_file" ]] && [[ "$after_count" -eq "$before_count" ]]; then
+  _pass "builtin bypass: near-miss disable entry did not disable the builtin"
+elif [[ ! -f "$nm2_file" ]]; then
+  _fail "builtin bypass: substring disable entry wrongly switched the builtin off"
+else
+  _fail "builtin bypass: node_modules file still exists"
+fi
+/bin/rm -rf "$WORK_DIR/dis-proj3"
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "builtin bypass: USE_BUILTIN_BYPASS_PATTERNS=false switches the whole list off"
+# Preserves the pre-builtins capability of running with no bypass patterns at
+# all, which an exact-string disable list cannot express.
+_set_mode selective
+echo 'USE_BUILTIN_BYPASS_PATTERNS=false' >> "$TEST_CONF_DIR/config.sh"
+off_lock_dir="$WORK_DIR/off-proj/.git"
+mkdir -p "$off_lock_dir"
+off_lock="$off_lock_dir/index.lock"
+echo "" > "$off_lock"
+before_count=$(_trash_count)
+_rm "$off_lock"
+after_count=$(_trash_count)
+if [[ ! -f "$off_lock" ]] && [[ "$after_count" -gt "$before_count" ]]; then
+  _pass "builtin bypass: master switch off, builtin no longer bypasses"
+elif [[ ! -f "$off_lock" ]]; then
+  _fail "builtin bypass: master switch off but builtin still permanently deleted"
+else
+  _fail "builtin bypass: index.lock still exists"
+fi
+/bin/rm -rf "$WORK_DIR/off-proj"
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "builtin bypass: master switch off still honours the user's own patterns"
+_set_mode selective
+echo 'USE_BUILTIN_BYPASS_PATTERNS=false' >> "$TEST_CONF_DIR/config.sh"
+echo 'BYPASS_TRASH_PATTERNS+=("/my-own-junk/")' >> "$TEST_CONF_DIR/config.sh"
+mkdir -p "$WORK_DIR/my-own-junk"
+own_junk="$WORK_DIR/my-own-junk/scratch.bin"
+echo "junk" > "$own_junk"
+before_count=$(_trash_count)
+_rm "$own_junk"
+after_count=$(_trash_count)
+if [[ ! -f "$own_junk" ]] && [[ "$after_count" -eq "$before_count" ]]; then
+  _pass "builtin bypass: user addition still bypasses with builtins off"
+elif [[ ! -f "$own_junk" ]]; then
+  _fail "builtin bypass: master switch off also killed the user's own pattern"
+else
+  _fail "builtin bypass: own junk file still exists"
+fi
+/bin/rm -rf "$WORK_DIR/my-own-junk"
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "builtin bypass: unrecognised master-switch value fails safe (keeps the file)"
+# A bypass PERMANENTLY deletes, so a value ai-trash cannot read must not
+# authorise one. Same == true rule as GIT_PROTECTION / FIND_PROTECTION.
+_set_mode selective
+echo 'USE_BUILTIN_BYPASS_PATTERNS=TRUE' >> "$TEST_CONF_DIR/config.sh"
+bad_lock_dir="$WORK_DIR/badsw-proj/.git"
+mkdir -p "$bad_lock_dir"
+bad_lock="$bad_lock_dir/index.lock"
+echo "" > "$bad_lock"
+before_count=$(_trash_count)
+_rm "$bad_lock"
+after_count=$(_trash_count)
+if [[ ! -f "$bad_lock" ]] && [[ "$after_count" -gt "$before_count" ]]; then
+  _pass "builtin bypass: unparseable master switch left builtins off (file recoverable)"
+elif [[ ! -f "$bad_lock" ]]; then
+  _fail "builtin bypass: unparseable master switch still authorised a permanent delete"
+else
+  _fail "builtin bypass: index.lock still exists"
+fi
+/bin/rm -rf "$WORK_DIR/badsw-proj"
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "ai-trash bypass-patterns: lists builtins and flags a disabled one"
+# The disable list matches builtins by exact string, so this listing is what
+# makes the opt-out usable at all: without it there is nothing to copy from.
+_set_mode selective
+echo 'DISABLE_BUILTIN_BYPASS_PATTERNS=("/node_modules/")' >> "$TEST_CONF_DIR/config.sh"
+echo 'BYPASS_TRASH_PATTERNS+=("/my-own-junk/")' >> "$TEST_CONF_DIR/config.sh"
+bp_out=$(_ai_trash bypass-patterns)
+bp_ok=true
+bp_why=""
+echo "$bp_out" | grep -q 'Builtin patterns ([0-9]* shipped' || { bp_ok=false; bp_why="no builtin header"; }
+echo "$bp_out" | grep -qF '/\.git/index\.lock$' || { bp_ok=false; bp_why="index.lock builtin not listed"; }
+echo "$bp_out" | grep -F '/node_modules/' | grep -q 'disabled by your config' || { bp_ok=false; bp_why="disabled builtin not flagged"; }
+echo "$bp_out" | grep -qF '/my-own-junk/' || { bp_ok=false; bp_why="user addition not listed"; }
+if [[ "$bp_ok" == true ]]; then
+  _pass "bypass-patterns: listed builtins, flagged the disabled one, listed user additions"
+else
+  _fail "bypass-patterns: $bp_why -- output was: $bp_out"
+fi
+
+_section "ai-trash bypass-patterns: warns about a disable entry matching no builtin"
+# Exact-string matching means a typo does nothing at all. Reporting it is the
+# difference between a config error and a silent one.
+_set_mode selective
+echo 'DISABLE_BUILTIN_BYPASS_PATTERNS=("/nodemodules/")' >> "$TEST_CONF_DIR/config.sh"
+bp_out=$(_ai_trash bypass-patterns)
+if echo "$bp_out" | grep -q "matching no builtin pattern" && echo "$bp_out" | grep -qF '/nodemodules/'; then
+  _pass "bypass-patterns: orphaned disable entry reported, not swallowed"
+else
+  _fail "bypass-patterns: orphaned disable entry not reported -- output was: $bp_out"
+fi
+
+_section "ai-trash bypass-patterns: reports an unrecognised master-switch value"
+_set_mode selective
+echo 'USE_BUILTIN_BYPASS_PATTERNS=TRUE' >> "$TEST_CONF_DIR/config.sh"
+bp_out=$(_ai_trash bypass-patterns)
+if echo "$bp_out" | grep -q "DISABLED" && echo "$bp_out" | grep -q "not a recognised value"; then
+  _pass "bypass-patterns: unrecognised master-switch value explained"
+else
+  _fail "bypass-patterns: unrecognised master-switch value not explained -- output was: $bp_out"
+fi
+
+_set_mode selective
+_ai_trash empty --force >/dev/null 2>&1
+
+
+# ─── Builtin AI-detection lists reaching an existing install ───────────
+# The same structural defect as the bypass patterns above, in the half that
+# decides whether a delete is intercepted AT ALL. A config written by an older
+# release carried its own AI_ENV_VARS=(...) / AI_PROCESSES=(...) assignments,
+# which REPLACED the shipped lists instead of adding to them, so no AI tool
+# recognised after that config was written was ever detected on that machine.
+
+# A pre-955d5ca config: the three detection lists exactly as that release
+# shipped them, before OpenClaw, Cline, Plandex, Crush, Qodo, CLAUDECODE=1 and
+# CODEX_SANDBOX were added. `claude` is deliberately LEFT OUT of AI_PROCESSES:
+# this suite runs under Claude Code, so keeping it would let the tier-2
+# ancestry walk match and mask the tier-1 regression these tests are about.
+_write_legacy_detection_config() {
+  cat > "$TEST_CONF_DIR/config.sh" <<'LEGACY_EOF'
+MODE=selective
+AI_ENV_VARS=(
+  "TERM_PROGRAM=cursor"
+  "TERM_PROGRAM=vscode"
+  "TERM_PROGRAM=windsurf"
+  "TERM_PROGRAM=WarpTerminal"
+)
+AI_PROCESSES=(
+  gemini
+  goose
+  devin
+)
+AI_PROCESS_ARGS=(
+  "gemini-cli"
+)
+LEGACY_EOF
+}
+
+# Run rm_wrapper.sh signalling AI-ness with $1 ("VAR=VALUE", or "none" for no
+# signal) instead of the suite-wide TERM_PROGRAM=cursor.
+#
+# The PPID detect cache is cleared first and this is load-bearing, not hygiene:
+# it is keyed on the parent PID and only guards against reuse by comparing the
+# parent's comm, so consecutive tests sharing one bash parent reuse the first
+# verdict. Without the clear, these tests report the previous test's answer.
+_rm_signal() {
+  local sig="$1"; shift
+  /bin/rm -f /tmp/.ai-trash-detect-* 2>/dev/null || true
+  if [[ "$sig" == none ]]; then
+    env -u TERM_PROGRAM -u CLAUDECODE -u CODEX_SANDBOX -u OPENCLAW_SHELL \
+      HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/rm_wrapper.sh" "$@"
+  else
+    env -u TERM_PROGRAM -u CLAUDECODE -u CODEX_SANDBOX -u OPENCLAW_SHELL \
+      HOME="$TEST_HOME" XDG_CONFIG_HOME="" "$sig" bash "$REPO_DIR/rm_wrapper.sh" "$@"
+  fi
+}
+
+_section "builtin detection: v1.6.22-era config still recognises Claude Code"
+# CLAUDECODE=1 reached AI_ENV_VARS after this config was written, so before the
+# split the tier-1 check missed it and the delete was permanent.
+_write_legacy_detection_config
+det_file="$WORK_DIR/detect-claude.txt"
+echo "irreplaceable user work" > "$det_file"
+before_count=$(_trash_count)
+_rm_signal "CLAUDECODE=1" "$det_file"
+after_count=$(_trash_count)
+if [[ ! -f "$det_file" ]] && [[ "$after_count" -gt "$before_count" ]]; then
+  _pass "builtin detection: shipped env var reached a legacy config (delete intercepted)"
+elif [[ ! -f "$det_file" ]]; then
+  _fail "builtin detection: Claude Code delete NOT intercepted under a legacy config (file permanently gone)"
+else
+  _fail "builtin detection: file still exists"
+fi
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "builtin detection: control, same delete is missed with the builtins off"
+# Attribution control for the test above. This suite runs under Claude Code, so
+# the tier-2 ancestry walk could intercept the delete on its own and make the
+# previous test pass for the wrong reason. With the shipped lists switched off,
+# only the legacy config's own entries remain and none of them can match.
+_write_legacy_detection_config
+echo 'USE_BUILTIN_AI_DETECTION=false' >> "$TEST_CONF_DIR/config.sh"
+det_off="$WORK_DIR/detect-off.txt"
+echo "data" > "$det_off"
+before_count=$(_trash_count)
+_rm_signal "CLAUDECODE=1" "$det_off"
+after_count=$(_trash_count)
+if [[ ! -f "$det_off" ]] && [[ "$after_count" -eq "$before_count" ]]; then
+  _pass "builtin detection: control, builtins off means the delete is not intercepted"
+elif [[ ! -f "$det_off" ]]; then
+  _fail "builtin detection: control failed, delete intercepted with builtins off (previous test proves nothing)"
+else
+  _fail "builtin detection: control file still exists"
+fi
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "builtin detection: a user's own env var is still honoured with builtins off"
+_write_legacy_detection_config
+echo 'USE_BUILTIN_AI_DETECTION=false' >> "$TEST_CONF_DIR/config.sh"
+echo 'AI_ENV_VARS+=("MYTOOL=1")' >> "$TEST_CONF_DIR/config.sh"
+# rm_wrapper's fast path execs /bin/rm before sourcing the library unless one of
+# the env vars IT hardcodes is set, so a custom signal needs full detection.
+echo 'FAST_PATH=false' >> "$TEST_CONF_DIR/config.sh"
+det_own="$WORK_DIR/detect-own.txt"
+echo "data" > "$det_own"
+before_count=$(_trash_count)
+_rm_signal "MYTOOL=1" "$det_own"
+after_count=$(_trash_count)
+if [[ ! -f "$det_own" ]] && [[ "$after_count" -gt "$before_count" ]]; then
+  _pass "builtin detection: user's own env var intercepted the delete"
+elif [[ ! -f "$det_own" ]]; then
+  _fail "builtin detection: user's own env var was ignored (file permanently gone)"
+else
+  _fail "builtin detection: own-signal file still exists"
+fi
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "builtin detection: DISABLE_BUILTIN_AI_DETECTION turns shipped entries off"
+# Exact strings, matched across all three shipped lists. Both the env var and
+# the process name have to go, or the tier-2 walk would still match `claude`.
+_write_legacy_detection_config
+cat >> "$TEST_CONF_DIR/config.sh" <<'DIS_EOF'
+DISABLE_BUILTIN_AI_DETECTION=(
+  "CLAUDECODE=1"
+  "claude"
+)
+DIS_EOF
+det_dis="$WORK_DIR/detect-disabled.txt"
+echo "data" > "$det_dis"
+before_count=$(_trash_count)
+_rm_signal "CLAUDECODE=1" "$det_dis"
+after_count=$(_trash_count)
+if [[ ! -f "$det_dis" ]] && [[ "$after_count" -eq "$before_count" ]]; then
+  _pass "builtin detection: disabled shipped entries no longer match"
+elif [[ ! -f "$det_dis" ]]; then
+  _fail "builtin detection: disable list had no effect (delete still intercepted)"
+else
+  _fail "builtin detection: disabled-case file still exists"
+fi
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "builtin detection: unrecognised master-switch value fails safe (keeps the file)"
+# Mirror image of the bypass switch, on purpose. Detecting an AI tool ADDS
+# protection, so an unreadable value must leave detection ON; a bypass pattern
+# authorises a permanent delete, so an unreadable value must leave that OFF.
+_write_legacy_detection_config
+echo 'USE_BUILTIN_AI_DETECTION=yes-please' >> "$TEST_CONF_DIR/config.sh"
+det_bad="$WORK_DIR/detect-badswitch.txt"
+echo "data" > "$det_bad"
+before_count=$(_trash_count)
+_rm_signal "CLAUDECODE=1" "$det_bad"
+after_count=$(_trash_count)
+if [[ ! -f "$det_bad" ]] && [[ "$after_count" -gt "$before_count" ]]; then
+  _pass "builtin detection: unparseable master switch left detection on (file recoverable)"
+elif [[ ! -f "$det_bad" ]]; then
+  _fail "builtin detection: unparseable master switch silently dropped protection"
+else
+  _fail "builtin detection: bad-switch file still exists"
+fi
+
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "ai-trash detection: lists shipped entries and flags a disabled one"
+_set_mode selective
+cat >> "$TEST_CONF_DIR/config.sh" <<'DET_EOF'
+DISABLE_BUILTIN_AI_DETECTION=("q")
+AI_PROCESSES+=(mytool)
+DET_EOF
+det_out=$(_ai_trash detection)
+det_ok=true
+det_why=""
+echo "$det_out" | grep -q "Environment variables:" || { det_ok=false; det_why="no env var group"; }
+echo "$det_out" | grep -qF "CLAUDECODE=1" || { det_ok=false; det_why="CLAUDECODE=1 not listed"; }
+echo "$det_out" | grep -qF "gh copilot" || { det_ok=false; det_why="command-line group not listed"; }
+echo "$det_out" | grep -E '^  q +\[disabled by your config\]' >/dev/null || { det_ok=false; det_why="disabled entry not flagged"; }
+if [[ "$det_ok" == true ]]; then
+  _pass "detection: listed all three shipped groups and flagged the disabled entry"
+else
+  _fail "detection: $det_why -- output was: $det_out"
+fi
+
+_section "ai-trash detection: warns about a disable entry matching nothing"
+_set_mode selective
+echo 'DISABLE_BUILTIN_AI_DETECTION=("claude-code")' >> "$TEST_CONF_DIR/config.sh"
+det_out=$(_ai_trash detection)
+if echo "$det_out" | grep -q "matching no shipped entry" && echo "$det_out" | grep -qF "claude-code"; then
+  _pass "detection: orphaned disable entry reported, not swallowed"
+else
+  _fail "detection: orphaned disable entry not reported -- output was: $det_out"
+fi
+
+_set_mode selective
+_ai_trash empty --force >/dev/null 2>&1
+
 
 # ─── ai-trash suggest ──────────────────────────────────────────────────
 
