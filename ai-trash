@@ -205,7 +205,22 @@ cmd_empty() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --force)       force=true ;;
-      --older-than)  shift; older_than="$1" ;;
+      --older-than)
+        shift
+        # A destructive filter must never degrade into "no filter". With the
+        # operand omitted -- `ai-trash empty --force --older-than`, a number
+        # dropped from a script or a shell history edit -- older_than stayed
+        # empty and the unfiltered branch below permanently deleted the ENTIRE
+        # trash, reporting it as an ordinary success. A non-numeric operand was
+        # the mirror image: it reached `find -mtime +junk`, whose error was
+        # discarded, so the command answered "No items to delete" over a trash
+        # that was full. Both now refuse, before anything is deleted.
+        if [[ $# -eq 0 || ! "$1" =~ ^[0-9]+$ ]]; then
+          echo "$PROG empty: --older-than needs a whole number of days (got '${1-}')" >&2
+          exit 1
+        fi
+        older_than="$1"
+        ;;
       *) echo "$PROG empty: unknown option '$1'" >&2; exit 1 ;;
     esac
     shift

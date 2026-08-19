@@ -21,7 +21,15 @@ MAX_TRASH_ITEMS=""             # empty = auto (see AUTO_MAX_ITEMS below); 0 = di
 SIZE_EVICTION_GRACE_HOURS=24   # recent items exempt from cap eviction
 [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE"
 
-# Sanitize grace value: accept non-negative integers only; fall back to 24 otherwise.
+# Sanitize every config number that gates a permanent deletion, before any of
+# them reaches an arithmetic context. bash resolves a bare word inside (( )) to
+# 0, and 0 is the most destructive value each of these has: RETENTION_DAYS=0
+# makes the purge below `-mtime +0`, which destroys every ai-trash entry older
+# than 24 hours. A single config typo -- RETENTION_DAYS="thirty", or a key left
+# with no value -- therefore used to wipe a month of recoverable trash on the
+# next scheduler run, reporting nothing. Anything that is not a non-negative
+# integer falls back to the shipped default instead of to 0.
+[[ "$RETENTION_DAYS" =~ ^[0-9]+$ ]] || RETENTION_DAYS=30
 [[ "$SIZE_EVICTION_GRACE_HOURS" =~ ^[0-9]+$ ]] || SIZE_EVICTION_GRACE_HOURS=24
 
 # ─── Age-based purge ───────────────────────────────────────────────────
@@ -98,11 +106,15 @@ cap_items=""
 #   N      : N GiB
 #
 # Test-only escape hatch: AI_TRASH_CAP_KB_OVERRIDE lets the test suite use a
-# tiny cap without writing gigabytes of data. Not for end-user use. (The item
-# cap needs no equivalent: a handful of empty files exceeds a small
-# MAX_TRASH_ITEMS, so tests exercise it through the real config key.)
-if [[ -n "${AI_TRASH_CAP_KB_OVERRIDE:-}" ]]; then
-  cap_kb=$AI_TRASH_CAP_KB_OVERRIDE
+# tiny cap without writing gigabytes of data. Not for end-user use.
+#
+# Guarded like the config keys, and for the same reason: an unparsed value
+# landed in cap_kb verbatim, so `(( total_kb > cap_kb ))` compared against 0
+# and the eviction loop below ran until every evictable entry was permanently
+# deleted. A value that is not a positive integer is treated as unset, leaving
+# the normal resolution below to run.
+if [[ "${AI_TRASH_CAP_KB_OVERRIDE:-}" =~ ^[0-9]+$ ]] && (( 10#$AI_TRASH_CAP_KB_OVERRIDE > 0 )); then
+  cap_kb=$(( 10#$AI_TRASH_CAP_KB_OVERRIDE ))
 elif [[ -z "$MAX_TRASH_SIZE_GB" ]]; then
   total_disk_kb=$(df -k "$HOME" 2>/dev/null | awk 'NR==2 {print $2}')
   # If we can't read the disk size, leave the SIZE cap unenforced rather than
@@ -127,7 +139,24 @@ fi
 # busiest profiled agent host (about 550 genuine deletions a day held for the
 # 30-day default retention), so it acts as a safety net for an unprofiled
 # workload rather than as a de-facto shortening of RETENTION_DAYS.
+#
+# Measured on the host this cap exists for, with `~/.Trash` seeded to a known
+# entry count and Finder's CPU sampled over a settled 60-second window:
+# 198 entries -> 1.2% of one core, 25,007 -> 23.3%, 50,190 -> 100.1%. The cap
+# is what keeps the trash off the pegged end of that curve; the residual cost
+# at the default is inherent to routing through ~/.Trash at all, which Finder
+# re-enumerates whatever ai-trash does.
 AUTO_MAX_ITEMS=25000
+# Test-only escape hatch, symmetric with AI_TRASH_CAP_KB_OVERRIDE above and
+# guarded the same way. The auto value is what every default install runs on,
+# and seeding 25,001 entries to exercise that branch is not something a test
+# suite can do -- the 25,000-entry eviction measured above took 20 minutes --
+# so the suite lowers the auto value instead of raising the item count. Not for
+# end-user use: set MAX_TRASH_ITEMS.
+if [[ "${AI_TRASH_AUTO_MAX_ITEMS_OVERRIDE:-}" =~ ^[0-9]+$ ]] \
+   && (( 10#$AI_TRASH_AUTO_MAX_ITEMS_OVERRIDE > 0 )); then
+  AUTO_MAX_ITEMS=$(( 10#$AI_TRASH_AUTO_MAX_ITEMS_OVERRIDE ))
+fi
 if [[ -z "$MAX_TRASH_ITEMS" ]]; then
   cap_items=$AUTO_MAX_ITEMS
 elif [[ "$MAX_TRASH_ITEMS" =~ ^[0-9]+$ ]] && (( 10#$MAX_TRASH_ITEMS > 0 )); then

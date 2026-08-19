@@ -617,6 +617,58 @@ fi
 # Restore default config
 cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
 
+_section "ai-trash-cleanup: unparseable RETENTION_DAYS falls back to the 30-day default"
+# A threshold that gates permanent deletion must never be read from a bare
+# word. bash resolves a non-numeric inside (( )) to 0, and 0 is the most
+# destructive value this variable has: it makes the purge `-mtime +0`, which
+# destroys every ai-trash entry older than 24 hours. A config typo
+# (RETENTION_DAYS="thirty", or a value left empty) therefore used to wipe a
+# month of recoverable trash on the next scheduler run, silently. The fallback
+# has to be the shipped default rather than "unenforced", so a genuinely
+# expired item is still purged in the same run.
+_ai_trash empty --force >/dev/null 2>&1
+cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
+echo 'RETENTION_DAYS="thirty"' >> "$TEST_CONF_DIR/config.sh"
+for _rd_name in retention-recent retention-ancient; do
+  echo "$_rd_name" > "$WORK_DIR/$_rd_name.txt"
+  _rm "$WORK_DIR/$_rd_name.txt"
+done
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  touch -t "$(date -v-5d  +%Y%m%d%H%M)" "$TEST_TRASH/retention-recent.txt"
+  touch -t "$(date -v-40d +%Y%m%d%H%M)" "$TEST_TRASH/retention-ancient.txt"
+else
+  touch -t "$(date -d '5 days ago'  +%Y%m%d%H%M)" "$TEST_TRASH/retention-recent.txt"
+  touch -t "$(date -d '40 days ago' +%Y%m%d%H%M)" "$TEST_TRASH/retention-ancient.txt"
+fi
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/ai-trash-cleanup"
+retention_junk_survivors=$(_trash_names | sort | tr '\n' ' ')
+if [[ "$retention_junk_survivors" == "retention-recent.txt " ]]; then
+  _pass "retention: unparseable RETENTION_DAYS fell back to 30 days (5d kept, 40d purged)"
+else
+  _fail "retention: unparseable RETENTION_DAYS left [$retention_junk_survivors] (expected 'retention-recent.txt ')"
+fi
+
+_section "ai-trash-cleanup: empty RETENTION_DAYS falls back to the 30-day default"
+# Same guard, reached by the other realistic typo: a key left with no value.
+_ai_trash empty --force >/dev/null 2>&1
+cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
+echo 'RETENTION_DAYS=' >> "$TEST_CONF_DIR/config.sh"
+echo "retention-empty" > "$WORK_DIR/retention-empty.txt"
+_rm "$WORK_DIR/retention-empty.txt"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  touch -t "$(date -v-5d +%Y%m%d%H%M)" "$TEST_TRASH/retention-empty.txt"
+else
+  touch -t "$(date -d '5 days ago' +%Y%m%d%H%M)" "$TEST_TRASH/retention-empty.txt"
+fi
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" bash "$REPO_DIR/ai-trash-cleanup"
+if _trash_names | grep -q "^retention-empty.txt"; then
+  _pass "retention: empty RETENTION_DAYS preserved a 5-day-old item"
+else
+  _fail "retention: empty RETENTION_DAYS purged a 5-day-old item"
+fi
+cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
+_ai_trash empty --force >/dev/null 2>&1
+
 # Clear items added by gap-coverage tests
 _ai_trash empty --force >/dev/null 2>&1
 
@@ -716,6 +768,37 @@ else
   _fail "size cap: setup failed (size-auto.txt not in trash)"
 fi
 # Restore default config for subsequent tests
+cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
+_ai_trash empty --force >/dev/null 2>&1
+
+_section "ai-trash-cleanup: unparseable AI_TRASH_CAP_KB_OVERRIDE evicts nothing"
+# Same class as the RETENTION_DAYS guard, on the size axis: an unvalidated
+# number reaching a destructive comparison. cap_kb="junk" made
+# `(( total_kb > cap_kb ))` compare against 0, which is over-cap for any
+# non-empty trash, so the eviction loop ran until every evictable entry was
+# permanently deleted. A cap value that cannot be parsed must leave the axis
+# unenforced instead. The item is aged past the grace window so that the
+# grace break is not what saves it.
+cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
+echo "MAX_TRASH_ITEMS=0" >> "$TEST_CONF_DIR/config.sh"
+junkcap_item=$(_make_and_trash "junkcap.txt" 100)
+if [[ -n "$junkcap_item" ]]; then
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    touch -t "$(date -v-3d +%Y%m%d%H%M)" "$TEST_TRASH/$junkcap_item"
+  else
+    touch -t "$(date -d '3 days ago' +%Y%m%d%H%M)" "$TEST_TRASH/$junkcap_item"
+  fi
+  HOME="$TEST_HOME" XDG_CONFIG_HOME="" \
+    AI_TRASH_CAP_KB_OVERRIDE="junk" \
+    bash "$REPO_DIR/ai-trash-cleanup"
+  if [[ -e "$TEST_TRASH/$junkcap_item" ]]; then
+    _pass "size cap: unparseable AI_TRASH_CAP_KB_OVERRIDE evicted nothing"
+  else
+    _fail "size cap: unparseable AI_TRASH_CAP_KB_OVERRIDE permanently deleted an aged item"
+  fi
+else
+  _fail "size cap: setup failed (junkcap.txt not in trash)"
+fi
 cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
 _ai_trash empty --force >/dev/null 2>&1
 
@@ -916,6 +999,46 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     _fail "item cap foreign: survivors=[$foreign_survivors] (expected 'foreign-entry.txt foreigntest-03.txt ')"
   fi
 fi
+
+_section "ai-trash-cleanup: the auto item cap applies with MAX_TRASH_ITEMS unset"
+# The shipped state: config.default.sh leaves MAX_TRASH_ITEMS commented out, so
+# every default install runs on the script's AUTO_MAX_ITEMS value. Every other
+# item-cap test above sets the key explicitly, so a regression confined to the
+# unset branch -- the auto value clobbered by the config load, or the branch
+# dropped -- would silently leave the cap unenforced for every user while the
+# whole suite still passed. Seeding 25,001 entries to observe the real value is
+# not something a suite can do (a measured 25,000-entry eviction took 20
+# minutes), so the test lowers the auto value through the
+# AI_TRASH_AUTO_MAX_ITEMS_OVERRIDE hatch and exercises the same branch.
+_ai_trash empty --force >/dev/null 2>&1
+cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
+_seed_aged_items autocap 5
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" AI_TRASH_AUTO_MAX_ITEMS_OVERRIDE=2 \
+  bash "$REPO_DIR/ai-trash-cleanup"
+# Scoped to this section's own entries: the Darwin block above deliberately
+# leaves an untagged foreign entry in the trash, which the cap neither counts
+# nor evicts, so a whole-directory count would be asserting someone else's
+# fixture rather than this one.
+autocap_survivors=$(_trash_names | { grep '^autocap-' || true; } | sort | tr '\n' ' ')
+if [[ "$autocap_survivors" == "autocap-04.txt autocap-05.txt " ]]; then
+  _pass "item cap: auto cap enforced with MAX_TRASH_ITEMS unset (5 -> 2, newest two)"
+else
+  _fail "item cap auto: survivors=[$autocap_survivors] (expected 'autocap-04.txt autocap-05.txt ')"
+fi
+
+_section "ai-trash-cleanup: unparseable auto item-cap override keeps the shipped default"
+# The hatch is itself a number reaching a destructive comparison, so it carries
+# the same guard as the config keys: garbage falls back to 25,000 rather than
+# to 0, which would empty the trash.
+_ai_trash empty --force >/dev/null 2>&1
+cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
+_seed_aged_items autojunk 4
+HOME="$TEST_HOME" XDG_CONFIG_HOME="" AI_TRASH_AUTO_MAX_ITEMS_OVERRIDE="lots" \
+  bash "$REPO_DIR/ai-trash-cleanup"
+autojunk_after=$(_trash_names | { grep -c '^autojunk-' || true; } | tr -d ' ')
+[[ "$autojunk_after" == "4" ]] \
+  && _pass "item cap: unparseable auto override evicted nothing (4 items kept)" \
+  || _fail "item cap: unparseable auto override left $autojunk_after of its 4 items"
 
 cp "$REPO_DIR/config.default.sh" "$TEST_CONF_DIR/config.sh"
 _ai_trash empty --force >/dev/null 2>&1
@@ -3109,12 +3232,48 @@ else
   _pass "list: output present (process display depends on detection path)"
 fi
 
-_section "ai-trash CLI: empty --older-than with no value"
-# Should error or handle gracefully, not crash
-empty_noarg_out=$(_ai_trash empty --older-than 2>&1; echo "EXIT:$?")
-empty_noarg_exit=$(echo "$empty_noarg_out" | grep "EXIT:" | cut -d: -f2)
-# This may error or treat empty as 0 — either way should not crash
-_pass "empty --older-than (no value): handled (exit=$empty_noarg_exit)"
+_section "ai-trash CLI: empty --older-than with no value refuses to delete anything"
+# A destructive filter must never degrade into "no filter". `--older-than` with
+# its operand omitted left the variable empty, which took the delete-everything
+# branch: `ai-trash empty --force --older-than` (a dropped number) permanently
+# destroyed the entire trash and reported it as a normal success. The old test
+# here asserted nothing -- it passed on any exit status, including that one --
+# so the suite named the case without covering it.
+_ai_trash empty --force >/dev/null 2>&1
+echo "noarg-guard" > "$WORK_DIR/noarg-guard.txt"
+_rm "$WORK_DIR/noarg-guard.txt"
+# Invoked directly rather than through _ai_trash: that helper ends in `|| true`
+# to survive `set -e`, which also swallows the exit status this test is about.
+empty_noarg_exit=0
+empty_noarg_out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="" \
+  bash "$REPO_DIR/ai-trash" empty --force --older-than 2>&1) || empty_noarg_exit=$?
+if (( empty_noarg_exit != 0 )) && echo "$empty_noarg_out" | grep -q -- "--older-than" \
+   && _trash_names | grep -q "^noarg-guard.txt"; then
+  _pass "empty --older-than (no value): refused (exit=$empty_noarg_exit), trash untouched"
+else
+  _fail "empty --older-than (no value): exit=$empty_noarg_exit, said [$empty_noarg_out], trash=[$(_trash_names | sort | tr '\n' ' ')] (expected non-zero exit, an --older-than message, and noarg-guard.txt kept)"
+fi
+
+_section "ai-trash CLI: empty --older-than with a non-numeric value refuses to delete anything"
+# The other half of the same guard: `--older-than junk` reached `find -mtime
+# +junk`, whose error was discarded, so the command reported "No items to
+# delete" over a trash that was not empty -- a wrong answer rather than a
+# destructive one, but from the same unvalidated number. Seeded again rather
+# than relying on the previous section's item: these two must fail
+# independently, and pre-fix the section above empties the trash.
+_ai_trash empty --force >/dev/null 2>&1
+echo "noarg-guard" > "$WORK_DIR/noarg-guard.txt"
+_rm "$WORK_DIR/noarg-guard.txt"
+empty_junkarg_exit=0
+empty_junkarg_out=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="" \
+  bash "$REPO_DIR/ai-trash" empty --force --older-than junk 2>&1) || empty_junkarg_exit=$?
+if (( empty_junkarg_exit != 0 )) && echo "$empty_junkarg_out" | grep -q -- "--older-than" \
+   && _trash_names | grep -q "^noarg-guard.txt"; then
+  _pass "empty --older-than junk: refused (exit=$empty_junkarg_exit), trash untouched"
+else
+  _fail "empty --older-than junk: exit=$empty_junkarg_exit, said [$empty_junkarg_out], trash=[$(_trash_names | sort | tr '\n' ' ')] (expected non-zero exit, an --older-than message, and noarg-guard.txt kept)"
+fi
+_ai_trash empty --force >/dev/null 2>&1
 
 _section "ai-trash CLI: empty without --force prompts (aborted by empty stdin)"
 # Create an item, then try empty without --force — should prompt and abort
