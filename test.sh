@@ -982,6 +982,96 @@ itemoff_after=$(_trash_count)
   && _pass "item cap: MAX_TRASH_ITEMS=0 evicted nothing" \
   || _fail "item cap: MAX_TRASH_ITEMS=0 left count at $itemoff_after, expected 4"
 
+_section "ai-trash-cleanup: both stat format strings emit a REAL tab"
+# The inventory join splits mtime from path on a real tab, so a format string
+# that does not produce one silently empties the inventory: total_kb and
+# item_count both read 0, no cap is ever over, and the size cap and the item
+# cap are unenforced while every test that does not evict still passes. That
+# shipped -- `stat -c '%Y\t%n'` passes the two characters through literally
+# under -c/--format (only --printf interprets escapes), so both caps were dead
+# on all of Linux and green on macOS, where BSD's %t IS a tab conversion.
+#
+# Asserted on BOTH branches from ONE test, and that is the point: the defect
+# was invisible from the platform it was written on. The Linux branch runs here
+# whenever any GNU stat is reachable (gstat from coreutils on a dev mac, plain
+# stat on Linux), so a macOS box catches a Linux-only break before it is pushed.
+#
+# The invocations are EXTRACTED from ai-trash-cleanup rather than restated.
+# A copy of the format string in this file would keep passing after the shipped
+# one drifted, which is the whole failure mode being guarded.
+_statfmt_probe="$WORK_DIR/statfmt-probe.txt"
+echo "probe" > "$_statfmt_probe"
+# The literal argument as it appears in the script, e.g. "%m${_tab}%N".
+# Either quote style: reverting to the single-quoted literal-escape form must
+# reach the tab assertion below and fail THERE, naming the real defect, rather
+# than dying here as an extraction miss.
+# Comment lines are stripped FIRST. ai-trash-cleanup documents the broken
+# `stat -c '%Y\t%n'` form in the comment above the fix, and matching that
+# would make this test read the defect it is guarding against out of prose
+# and report it as the shipped code -- which is exactly what it did on the
+# first run of this test.
+_extract_fmt() {  # $1 = the stat flag, e.g. -f or -c
+  sed 's/[[:space:]]*#.*$//' "$REPO_DIR/ai-trash-cleanup" \
+    | grep -oE "stat $1 (\"[^\"]*\"|'[^']*')" \
+    | head -1 | sed -E "s/^stat $1 .//; s/.$//"
+}
+_bsd_fmt_src=$(_extract_fmt -f)
+_gnu_fmt_src=$(_extract_fmt -c)
+if [[ -z "$_bsd_fmt_src" || -z "$_gnu_fmt_src" ]]; then
+  _fail "stat format: could not extract both format strings from ai-trash-cleanup (bsd='$_bsd_fmt_src' gnu='$_gnu_fmt_src')"
+else
+  # Resolve ${_tab} the same way the script does, without eval'ing the script.
+  _tab=$'\t'
+  _bsd_fmt=${_bsd_fmt_src//\$\{_tab\}/$_tab}
+  _gnu_fmt=${_gnu_fmt_src//\$\{_tab\}/$_tab}
+
+  # A GNU stat, if one is reachable under any name. `stat -c` is the tell.
+  _gnu_stat=""
+  for _cand in gstat stat; do
+    if command -v "$_cand" >/dev/null 2>&1 \
+       && "$_cand" -c '%Y' "$_statfmt_probe" >/dev/null 2>&1; then
+      _gnu_stat="$_cand"; break
+    fi
+  done
+  # A BSD stat, likewise. `stat -f` with a conversion is the tell.
+  _bsd_stat=""
+  if command -v stat >/dev/null 2>&1 && stat -f '%m' "$_statfmt_probe" >/dev/null 2>&1; then
+    _bsd_stat="stat"
+  fi
+
+  _fmt_checked=0
+  if [[ -n "$_bsd_stat" ]]; then
+    _fmt_checked=$(( _fmt_checked + 1 ))
+    if "$_bsd_stat" -f "$_bsd_fmt" "$_statfmt_probe" | grep -q "$_tab"; then
+      _pass "stat format: the shipped BSD format emits a real tab"
+    else
+      _fail "stat format: the shipped BSD format '$_bsd_fmt_src' emits no tab, so the inventory join would match nothing and every cap would be silently unenforced"
+    fi
+  fi
+  if [[ -n "$_gnu_stat" ]]; then
+    _fmt_checked=$(( _fmt_checked + 1 ))
+    if "$_gnu_stat" -c "$_gnu_fmt" "$_statfmt_probe" | grep -q "$_tab"; then
+      _pass "stat format: the shipped GNU format emits a real tab (via $_gnu_stat)"
+    else
+      _fail "stat format: the shipped GNU format '$_gnu_fmt_src' emits no tab (via $_gnu_stat), so the inventory join would match nothing and every cap would be silently unenforced"
+    fi
+  fi
+  # Negative control. The assertions above conclude "a tab is present"; if grep
+  # matched a tab in anything, or the extraction silently produced an empty
+  # format, they would pass just as readily. The known-bad form every one of
+  # them exists to reject has to be shown FAILING through the same commands.
+  if [[ -n "$_gnu_stat" ]]; then
+    if "$_gnu_stat" -c '%Y\t%n' "$_statfmt_probe" | grep -q "$_tab"; then
+      _fail "stat format: control failed -- '%Y\\t%n' produced a real tab under $_gnu_stat -c, so the assertions above could not have failed either"
+    else
+      _pass "stat format: control, the literal-escape form is correctly rejected"
+    fi
+  fi
+  if [[ "$_fmt_checked" -eq 0 ]]; then
+    _fail "stat format: no stat implementation was probed, so this test asserted nothing"
+  fi
+fi
+
 _section "ai-trash-cleanup: unparseable MAX_TRASH_ITEMS fails safe"
 # A destructive cap must never guess at a garbage value. Anything that is not
 # a positive integer leaves the axis unenforced rather than evicting to 0.

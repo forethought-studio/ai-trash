@@ -220,10 +220,22 @@ fi
 # working directory while `stat` would block on stdin.
 [[ -s "$items" ]] || exit 0
 
+# The separator is a REAL tab built by the shell, never the two-character
+# sequence \t handed to the tool to interpret. GNU stat interprets backslash
+# escapes only under --printf; under -c/--format it passes them through
+# literally, so `stat -c '%Y\t%n'` emitted `<mtime>\tpath` with a literal
+# backslash and the join below -- which splits on a real tab -- matched nothing.
+# The inventory came out EMPTY on every Linux run, which is indistinguishable
+# from an empty trash: total_kb and item_count both read 0, no cap was ever
+# over, and the size cap and the item cap were silently unenforced on the whole
+# platform while the suite on macOS (BSD stat, whose %t IS a tab conversion)
+# stayed green. Building the tab here removes the escape-interpretation
+# question from both branches instead of answering it per tool.
+_tab=$'\t'
 if [[ "$PLATFORM" == "Darwin" ]]; then
-  xargs -0 stat -f '%m%t%N' < "$items" > "$mtimes" 2>/dev/null
+  xargs -0 stat -f "%m${_tab}%N" < "$items" > "$mtimes" 2>/dev/null
 else
-  xargs -0 stat -c '%Y\t%n' < "$items" > "$mtimes" 2>/dev/null
+  xargs -0 stat -c "%Y${_tab}%n" < "$items" > "$mtimes" 2>/dev/null
 fi
 xargs -0 du -sk < "$items" > "$sizes" 2>/dev/null
 
@@ -237,6 +249,24 @@ awk '
   { i = index($0, "\t"); path = substr($0, i + 1)
     if (path in mtime) print mtime[path] "\t" substr($0, 1, i - 1) "\t" path }
 ' "$mtimes" "$sizes" > "$inventory"
+
+# A join that drops EVERY row is a broken delimiter contract, not an empty
+# trash, and the two are otherwise byte-identical downstream: both leave
+# total_kb and item_count at 0, both report success, and both enforce no cap at
+# all. That is exactly how a literal `\t` in the stat format disabled the size
+# cap and the item cap across all of Linux without turning anything red outside
+# CI. Individual entries legitimately go missing here (a live agent deletes one
+# between the enumerate and the stat), so the guard is deliberately narrow:
+# both attribute passes produced rows, and the join still matched none of them.
+# Refuse to run rather than "enforce" caps against an inventory known to be
+# wrong -- eviction is permanent, and a cleanup that silently does nothing is
+# recoverable in a way that one working from bad data is not.
+if [[ ! -s "$inventory" && -s "$mtimes" && -s "$sizes" ]]; then
+  echo "ai-trash-cleanup: attribute join matched none of $(wc -l < "$mtimes" | tr -d ' ') stat and $(wc -l < "$sizes" | tr -d ' ') du records." >&2
+  echo "  The two passes disagree on their field separator, so the inventory cannot be trusted and no cap was enforced." >&2
+  echo "  Platform: $PLATFORM. Report this at https://github.com/forethought-studio/ai-trash/issues" >&2
+  exit 1
+fi
 
 # Current totals on both axes.
 total_kb=$(awk -F'\t' '{s+=$2} END {print s+0}' "$inventory")
